@@ -1,0 +1,165 @@
+---
+title: "Instance Configuration: Defining Deployable Services"
+sidebarTitle: "Instance Config"
+description: "Full reference for configuration/*.json files — runtime selection, launch command, port ranges, resource limits, template installation, and file variable substitution."
+---
+
+An instance configuration is a JSON file placed in `./configuration/` that describes every aspect of a deployable service: which runtime to use, what command to launch, which port range to allocate from, how many instances to maintain, and which templates to copy into the working directory. Universe loads all `.json` files in that folder at startup and on each `config reload` command.
+
+## Full Configuration Example
+
+The file below mirrors the `./configuration/default.json` that Universe generates on first run:
+
+```json
+{
+  "name": "default",
+  "runtime": "screen",
+  "command": "java -jar server.jar",
+  "static": false,
+  "ramMB": 2048,
+  "cpu": 100,
+  "instanceGroups": [],
+  "nodes": ["node-1"],
+  "hostAddress": "127.0.0.1",
+  "availablePorts": { "min": 25565, "max": 25570 },
+  "minimumServiceCount": 1,
+  "environmentVariables": {
+    "UNIVERSE_INSTANCE_ID": "%INSTANCE_ID%"
+  },
+  "templateInstallationConfig": {
+    "allOf": [
+      { "name": "base", "group": "server", "storage": "local", "priority": 0 }
+    ],
+    "allInGroups": [],
+    "oneOf": [],
+    "oneInGroups": [],
+    "onTemplatePasteOverridePresentFiles": false
+  },
+  "fileModifications": ["server.properties"],
+  "properties": {},
+  "additionalPorts": []
+}
+```
+
+## Field Reference
+
+<ParamField path="name" type="string" required>
+  Unique identifier for this configuration. Must match the filename (without `.json`). Referenced by `instance create <name>` and `POST /api/instances`.
+</ParamField>
+
+<ParamField path="runtime" type="string" default="screen">
+  Runtime provider key used to start the process. Built-in values are `screen` and `tmux`. Extension-provided values include `docker` and `k8s`.
+</ParamField>
+
+<ParamField path="command" type="string" required>
+  Shell command executed inside the runtime when the instance starts. Example: `java -Xmx2G -jar server.jar`. Template variables are **not** substituted in the command itself — use `environmentVariables` for dynamic values.
+</ParamField>
+
+<ParamField path="static" type="boolean" default="false">
+  When `true` the instance's working directory is **not** deleted after the process stops. Useful for services that need to persist state across restarts (e.g. a database sidecar).
+</ParamField>
+
+<ParamField path="ramMB" type="integer" default="2048">
+  RAM in megabytes to reserve for this instance on the target node. Universe tracks per-node allocation and will not deploy to a node whose `maxRamMB` would be exceeded.
+</ParamField>
+
+<ParamField path="cpu" type="integer" default="100">
+  CPU units to reserve for this instance. **100 units equals one physical core.** A node with `maxCpu: 400` can therefore host at most four instances each requesting `cpu: 100`.
+</ParamField>
+
+<ParamField path="instanceGroups" type="array">
+  List of logical group names this instance belongs to. Groups are used by proxy plugins (Velocity, BungeeCord) for auto-connect routing and by Kubernetes manifest export.
+</ParamField>
+
+<ParamField path="nodes" type="array">
+  List of `nodeId` values that are eligible to host instances of this configuration. Universe will only dispatch to nodes whose `nodeId` appears in this list.
+</ParamField>
+
+<ParamField path="hostAddress" type="string" default="127.0.0.1">
+  IP address advertised by instances of this configuration to connecting clients. May contain a template variable such as `%TAILSCALE_IP%` when using the Tailscale extension for mesh-network connectivity.
+</ParamField>
+
+<ParamField path="availablePorts" type="object">
+  Port range from which Universe allocates a free port for each new instance.
+
+  | Sub-field | Type | Description |
+  |-----------|------|-------------|
+  | `min` | integer | Lowest port in the range (inclusive). |
+  | `max` | integer | Highest port in the range (inclusive). |
+
+  Universe checks in-memory allocations, cluster-wide active instances, and OS-level availability before assigning a port to prevent conflicts.
+</ParamField>
+
+<ParamField path="minimumServiceCount" type="integer" default="1">
+  Target number of running instances Universe should maintain for this configuration. The cluster will automatically create new instances if the live count falls below this value.
+</ParamField>
+
+<ParamField path="environmentVariables" type="object">
+  Map of environment variable names to values injected into the process environment at startup. Values may contain built-in template variables which are resolved at instance creation time.
+
+  Example:
+  ```json
+  {
+    "UNIVERSE_INSTANCE_ID": "%INSTANCE_ID%",
+    "SERVER_PORT": "%PORT%",
+    "MASTER_HOST": "%MASTER_ADDRESS%"
+  }
+  ```
+</ParamField>
+
+<ParamField path="templateInstallationConfig" type="object">
+  Controls which templates are copied into the instance's working directory before launch. See the [Templates](/configuration/templates) page for a full explanation of the copy algorithm.
+
+  | Sub-field | Type | Description |
+  |-----------|------|-------------|
+  | `allOf` | array | Every template listed here is installed unconditionally. Each entry is `{name, group, storage, priority}`. |
+  | `allInGroups` | array | Every template discovered under each named group directory is installed. |
+  | `oneOf` | array | Exactly one template is picked at random from this list. |
+  | `oneInGroups` | array | One template is picked at random from each named group. |
+  | `onTemplatePasteOverridePresentFiles` | boolean | When `true`, higher-priority templates are applied **last** and overwrite existing files. When `false`, they are applied **first** and are preserved. |
+</ParamField>
+
+<ParamField path="fileModifications" type="array">
+  List of file paths (relative to the instance working directory) whose contents Universe will scan for template variable placeholders after templates are copied. For example, `["server.properties", "config/settings.yml"]`.
+</ParamField>
+
+<ParamField path="properties" type="object">
+  Custom key/value map for user-defined template variables. Each entry `{ "myKey": "myValue" }` makes `%myKey%` available as a placeholder in all files listed in `fileModifications`. See the [Templates](/configuration/templates) page for details.
+</ParamField>
+
+<ParamField path="additionalPorts" type="array">
+  Extra ports to associate with the instance beyond the primary allocated port. Each entry is an object:
+
+  | Sub-field | Type | Default | Description |
+  |-----------|------|---------|-------------|
+  | `port` | integer | — | Port number. |
+  | `protocol` | string | `"TCP"` | Protocol (`TCP` or `UDP`). Used in Kubernetes manifest export. |
+  | `name` | string | `""` | Human-readable name for the port (e.g. `"debug"`, `"rcon"`). |
+</ParamField>
+
+<Tip>
+  Built-in variables like `%INSTANCE_ID%`, `%PORT%`, `%MASTER_ADDRESS%`, and `%NODE_ID%` work in both `environmentVariables` values and in files listed under `fileModifications`. See the [Templates](/configuration/templates) page for the full variable list.
+</Tip>
+
+## Managing Configurations at Runtime
+
+<CardGroup cols={2}>
+  <Card title="Console commands" icon="terminal">
+    ```bash
+    config list       # show all loaded configurations
+    config reload     # reload all files from ./configuration/
+    ```
+  </Card>
+  <Card title="REST API" icon="globe">
+    ```bash
+    # List all configurations
+    GET  /api/configurations
+
+    # Create or update one
+    PUT  /api/configurations/default
+
+    # Delete one
+    DELETE /api/configurations/default
+    ```
+  </Card>
+</CardGroup>

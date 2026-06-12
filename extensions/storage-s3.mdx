@@ -1,0 +1,124 @@
+---
+title: "S3 Template Storage: Centralized Multi-Node Templates"
+sidebarTitle: "S3 Storage"
+description: "Store and retrieve Universe templates from AWS S3 or MinIO for centralized multi-node template management, with automatic K8s init-container integration."
+---
+
+The S3 storage extension registers an additional `TemplateStorageProvider` under the storage key `"s3"`. Once loaded, any template installation config that sets `"storage": "s3"` will download its templates directly from your S3 bucket — no manual copying between nodes required.
+
+## When to Use This
+
+- **Multi-node clusters** — You run more than one Universe node and want a single source of truth for templates instead of syncing them manually with `template sync`.
+- **Kubernetes / cloud mode** — When using the K8s runtime extension in cloud mode (`hostDataPath: null`), it reads the S3 config to generate init containers that pull templates before the main container starts.
+- **Backup and versioning** — S3 lifecycle policies can version your template ZIPs automatically, giving you a rollback path.
+
+## Installation
+
+Place `extension-storage-s3.jar` in `./extensions/`, then create the configuration file before restarting Universe.
+
+## Configuration
+
+Create `./extensions/s3/config.json`:
+
+```json
+{
+  "bucket": "universe-templates",
+  "region": "us-east-1",
+  "endpoint": null,
+  "accessKey": "AKIA...",
+  "secretKey": "...",
+  "prefix": "templates/"
+}
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `bucket` | `"universe-templates"` | S3 bucket name |
+| `region` | `"us-east-1"` | AWS region. Use `"us-east-1"` for most MinIO deployments too |
+| `endpoint` | `null` | Custom endpoint URL for S3-compatible services. Set to e.g. `"http://minio:9000"` for MinIO |
+| `accessKey` | `null` | AWS access key ID, or MinIO access key |
+| `secretKey` | `null` | AWS secret access key, or MinIO secret key |
+| `prefix` | `"templates/"` | Key prefix prepended to all template object paths |
+
+## Template Key Format
+
+Templates are stored as ZIP archives following this key structure:
+
+```
+{prefix}{group}/{name}.zip
+```
+
+For example, with the default `prefix` of `"templates/"`, the template `server/base` is stored as:
+
+```
+templates/server/base.zip
+```
+
+## Console Commands
+
+The extension registers two commands for manual upload and download operations:
+
+```bash
+# Zip and upload ./templates/server/base to S3
+s3 upload server/base
+
+# Download from S3 and extract to ./templates/server/base
+s3 download server/base
+```
+
+Both commands accept the `group/name` format matching your local `./templates/<group>/<name>/` directory layout.
+
+## Using S3 Templates in a Configuration
+
+Reference `"storage": "s3"` in your `templateInstallationConfig`:
+
+```json
+{
+  "name": "lobby",
+  "runtime": "screen",
+  "command": "java -jar server.jar",
+  "templateInstallationConfig": {
+    "allOf": [
+      {
+        "name": "base",
+        "group": "server",
+        "storage": "s3",
+        "priority": 0
+      }
+    ]
+  }
+}
+```
+
+When an instance is created, Universe calls `S3TemplateStorage.extractTemplate()` to stream the ZIP directly into the instance's working directory — bypassing the local `./templates/` cache entirely so local and remote templates with the same key can coexist.
+
+## Kubernetes Integration
+
+When the K8s runtime extension is running in cloud mode (no `hostDataPath`), it automatically reads the S3 config from `./extensions/s3/config.json` and generates Kubernetes init containers that download the required template ZIPs before the main application container starts. You do not need to configure this manually — enabling both the S3 and K8s extensions is enough.
+
+<Note>
+  The K8s init container approach ensures that templates are pulled on the node where the Pod is scheduled rather than relying on shared persistent volumes.
+</Note>
+
+## MinIO Example
+
+For self-hosted object storage with MinIO, override the `endpoint` to point at your MinIO service:
+
+```json
+{
+  "bucket": "universe",
+  "region": "us-east-1",
+  "endpoint": "http://minio.internal:9000",
+  "accessKey": "minioadmin",
+  "secretKey": "minioadmin",
+  "prefix": "templates/"
+}
+```
+
+<Tip>
+  MinIO ignores the `region` field but the AWS SDK still requires a non-empty value. `"us-east-1"` is the conventional placeholder for MinIO.
+</Tip>
+
+## Reload Behaviour
+
+The S3 extension is reloadable. Running `extension reload` or `extension reload storage-s3` calls `onReload()`, which closes the existing S3 client, re-reads `config.json`, and registers a fresh `S3TemplateStorage` instance — useful when rotating credentials without restarting the cluster.

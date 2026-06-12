@@ -1,0 +1,140 @@
+---
+title: "Logging Configuration and Log Access in Universe"
+sidebarTitle: "Logging"
+description: "Universe's dual logging system, debug mode activation, daily log rotation with 30-day retention, and REST and WebSocket endpoints for log retrieval."
+---
+
+Universe uses two complementary logging systems that serve different audiences. Operators interacting with the console see a styled, human-readable output managed by the `gg.scala.universe.console` package. At the same time, an SLF4J/Logback pipeline captures framework-level diagnostics from Hazelcast, Docker, Kubernetes, and Netty into a rotating log file. Understanding both systems makes it straightforward to know where to look when troubleshooting.
+
+## The Two Logging Systems
+
+| System | Purpose | Output destination | Controlled by |
+|---|---|---|---|
+| **Console** (`gg.scala.universe.console`) | Operator-facing CLI messages with styled arrows, colour-coded badges, and tables | `stdout` via JLine | `debug` flag in `config.json` |
+| **SLF4J / Logback** | Framework internals: Hazelcast, Docker client, K8s client, Netty, AWS SDK | `./logs/universe.log` (and optionally `stdout`) | `universe-logback.xml` |
+
+The console output is not captured by Logback — it writes directly through JLine. Log files therefore contain framework and internal Universe log records; they do not duplicate the formatted console lines you see in the terminal.
+
+---
+
+## Log File Location and Rotation
+
+<Note>
+  The active log file is always `./logs/universe.log`, relative to the working directory where the Universe JAR was started. In Docker deployments this is typically `/data/logs/universe.log` if the data directory is mounted at `/data`.
+</Note>
+
+Logback is configured with a `TimeBasedRollingPolicy`:
+
+- **File name pattern:** `./logs/universe-%d{yyyy-MM-dd}.log`
+- **Rotation schedule:** Daily — a new file is created each day at midnight.
+- **Retention:** 30 days (`maxHistory=30`). Files older than 30 days are deleted automatically.
+
+The full log entry format in the rotating file is:
+
+```
+HH:mm:ss.SSS [thread-name] LEVEL  logger.name - message
+```
+
+---
+
+## Debug Mode
+
+By default, Universe runs with `debug: false`. Debug mode is enabled by setting the flag in `./config.json`:
+
+```json
+{
+  "debug": true
+}
+```
+
+The table below summarises what changes between the two modes:
+
+| Logger | `debug: false` | `debug: true` |
+|---|---|---|
+| Console output | `INFO`+ operational messages | `INFO`+ and `DEBUG` messages |
+| Logback console appender | `WARN`+ only | `INFO`+ for all loggers including frameworks |
+| `./logs/universe.log` | Full output (`INFO`+) | Full output (`DEBUG`+) |
+| Framework loggers (`com.hazelcast`, `com.github.dockerjava`, etc.) | `WARN`+ | `INFO`+ |
+
+Restart Universe after changing `debug` for the new setting to take effect. Debug mode produces significantly higher log volume, especially from Hazelcast's membership protocol and Netty's I/O layer.
+
+---
+
+## Logback Logger Levels
+
+The bundled `universe-logback.xml` configures the following loggers explicitly:
+
+```xml
+<!-- Framework loggers: only WARN and above go to console -->
+<logger name="com.hazelcast"             level="WARN"/>
+<logger name="io.fabric8.kubernetes"     level="WARN"/>
+<logger name="com.github.dockerjava"     level="WARN"/>
+<logger name="org.apache.http"           level="WARN"/>
+<logger name="software.amazon.awssdk"    level="WARN"/>
+
+<!-- Universe internal: INFO+ goes to both console and file -->
+<logger name="gg.scala.universe"         level="INFO"/>
+```
+
+The root logger is `INFO`, which means any library not explicitly named inherits that level. To permanently silence or increase verbosity for a specific library, add a `<logger>` element to `universe-logback.xml` in `./extensions/` or supply a custom `logback.xml` on the classpath before the bundled configuration.
+
+---
+
+## Accessing Instance Logs via REST API
+
+Universe exposes two endpoints for reading instance logs remotely without needing shell access to the Wrapper node.
+
+<Tabs>
+  <Tab title="Last N lines (HTTP)">
+    Retrieve the last N lines of an instance's `stdout.log`:
+
+    ```bash
+    curl -H "Authorization: Bearer unv_your_token_here" \
+      "http://localhost:7000/api/instances/ab12cd/logs?lines=100"
+    ```
+
+    The `lines` query parameter defaults to `100`. The response is a JSON array of log line strings. This endpoint is suitable for polling in dashboards or CI scripts.
+  </Tab>
+  <Tab title="Live stream (WebSocket)">
+    Subscribe to a live tail of an instance's output over WebSocket:
+
+    ```
+    WS /api/instances/{id}/live-log
+    ```
+
+    Connect with your Bearer token in the `Authorization` header during the WebSocket handshake. Each WebSocket message is one log line. The connection stays open until the instance stops or the client disconnects.
+
+    ```bash
+    # Using wscat (Node.js WebSocket CLI)
+    wscat -c "ws://localhost:7000/api/instances/ab12cd/live-log" \
+      -H "Authorization: Bearer unv_your_token_here"
+    ```
+  </Tab>
+</Tabs>
+
+<Note>
+  WebSocket connections to `/api/instances/{id}/live-log` require the same Bearer token authentication as all other API endpoints. The token must be provided in the `Authorization` header during the initial HTTP upgrade handshake — it cannot be passed as a query parameter.
+</Note>
+
+---
+
+## Accessing Logs in Docker
+
+For the Universe node process itself (not managed instances), use standard Docker log commands to read its stdout:
+
+```bash
+# Stream logs from the running container
+docker logs -f universe-master
+
+# View the last 200 lines
+docker logs --tail=200 universe-master
+```
+
+The Universe process writes its JLine console output to the container's stdout, so `docker logs` captures everything you would see in an interactive session.
+
+If you mount a data volume, the rotating log file is also available directly on the host:
+
+```bash
+# Tail the log file on the host (if ./data is the mounted volume)
+tail -f ./data/logs/universe.log
+```

@@ -1,0 +1,143 @@
+---
+title: "Metrics Extensions: Prometheus and InfluxDB Export"
+sidebarTitle: "Metrics"
+description: "Expose Universe cluster and JVM metrics via a Prometheus /api/metrics scrape endpoint or push them to InfluxDB 2.x for dashboards and long-term retention."
+---
+
+Universe ships two metrics extension JARs that implement the `MetricsProvider` interface: one for Prometheus (pull-based) and one for InfluxDB 2.x (push-based). Both use [Micrometer](https://micrometer.io/) under the hood and record the same set of Universe-specific gauges and counters — the difference is only in how metrics are delivered to your monitoring stack.
+
+<Note>
+  Only one `MetricsProvider` can be active at a time. If you load both extension JARs, the last one registered during startup wins. Use `extension list` to verify which provider is active, and remove the unwanted JAR from `./extensions/` to disable it.
+</Note>
+
+## Available Metrics
+
+Both extensions record the following metrics:
+
+| Metric | Type | Tags | Description |
+|--------|------|------|-------------|
+| `universe.instances` | Gauge | `state=online/offline/stopped` | Number of instances per state |
+| `universe.nodes` | Gauge | — | Total connected cluster nodes |
+| `universe.configs` | Gauge | — | Number of loaded instance configurations |
+| `universe.node.ram` | Gauge | `node_id=...` | RAM usage reported by each node (MB) |
+| `universe.node.cpu` | Gauge | `node_id=...` | CPU usage reported by each node (0.0–1.0) |
+
+In addition, both extensions automatically register Micrometer's standard JVM and system binders:
+
+- **JVM Memory** — heap and non-heap usage, GC pool breakdown
+- **JVM GC** — collection counts and pause times
+- **JVM Threads** — live, daemon, and peak thread counts
+- **CPU** — system and process CPU usage
+- **Uptime** — JVM uptime in seconds
+
+<Tabs>
+  <Tab title="Prometheus">
+    The Prometheus extension registers a `PrometheusMeterRegistry` and exposes metrics in Prometheus text format at the `/api/metrics` endpoint on the Master node's REST API port.
+
+    **Installation:** Place `extension-metrics-prometheus.jar` in `./extensions/` and restart Universe. No configuration file is needed.
+
+    **Scrape endpoint:**
+
+    ```
+    GET http://<master-host>:7000/api/metrics
+    ```
+
+    The endpoint returns plain text in the standard Prometheus exposition format. It requires no authentication.
+
+    **Prometheus scrape configuration:**
+
+    ```yaml
+    scrape_configs:
+      - job_name: 'universe'
+        static_configs:
+          - targets: ['localhost:7000']
+        metrics_path: '/api/metrics'
+    ```
+
+    **Example metric output:**
+
+    ```
+    # HELP universe_instances Number of instances per state
+    # TYPE universe_instances gauge
+    universe_instances{state="online"} 5.0
+    universe_instances{state="offline"} 0.0
+    universe_instances{state="stopped"} 1.0
+    # HELP universe_nodes Total connected cluster nodes
+    # TYPE universe_nodes gauge
+    universe_nodes 2.0
+    # HELP universe_node_ram_megabytes RAM usage per node in megabytes
+    # TYPE universe_node_ram_megabytes gauge
+    universe_node_ram_megabytes{node_id="node-1"} 1024.0
+    universe_node_ram_megabytes{node_id="node-2"} 2048.0
+    # HELP jvm_memory_used_bytes
+    # TYPE jvm_memory_used_bytes gauge
+    jvm_memory_used_bytes{area="heap",id="G1 Eden Space"} 6.7108864E7
+    ```
+
+    **Grafana dashboard:** Import the JVM Micrometer dashboard (ID `4701`) from grafana.com as a starting point, then add panels for the `universe.*` metrics.
+  </Tab>
+  <Tab title="InfluxDB">
+    The InfluxDB extension registers a Micrometer `InfluxMeterRegistry` that pushes metrics to an InfluxDB 2.x instance on a configurable interval.
+
+    **Installation:** Place `extension-metrics-influxdb.jar` in `./extensions/` and create `./extensions/metrics-influxdb/config.json`.
+
+    **Configuration:**
+
+    ```json
+    {
+      "url": "http://localhost:8086",
+      "token": "your-influxdb-token",
+      "org": "universe",
+      "bucket": "metrics",
+      "intervalSeconds": 15
+    }
+    ```
+
+    | Field | Default | Description |
+    |-------|---------|-------------|
+    | `url` | `"http://localhost:8086"` | InfluxDB server URL |
+    | `token` | `""` | InfluxDB API token (required for InfluxDB 2.x) |
+    | `org` | `"universe"` | InfluxDB organisation name |
+    | `bucket` | `"metrics"` | InfluxDB bucket to write metrics into |
+    | `intervalSeconds` | `15` | How often metrics are flushed to InfluxDB |
+
+    **Docker Compose example:**
+
+    ```yaml
+    services:
+      universe:
+        image: git.lunarlabs.dev/scala/universe:latest
+        volumes:
+          - ./data:/data
+
+      influxdb:
+        image: influxdb:2
+        environment:
+          DOCKER_INFLUXDB_INIT_MODE: setup
+          DOCKER_INFLUXDB_INIT_USERNAME: admin
+          DOCKER_INFLUXDB_INIT_PASSWORD: secret123
+          DOCKER_INFLUXDB_INIT_ORG: universe
+          DOCKER_INFLUXDB_INIT_BUCKET: metrics
+          DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: your-influxdb-token
+        volumes:
+          - influxdb-data:/var/lib/influxdb2
+
+    volumes:
+      influxdb-data:
+    ```
+
+    **Metric format in InfluxDB line protocol:**
+
+    ```
+    universe,node_id=node-1,config=lobby instances=5i,ram_mb=4096i 1716470400000000000
+    ```
+
+    Metrics are tagged with `node_id` and configuration name where applicable. Use the InfluxDB Data Explorer or Grafana with the InfluxDB data source to visualise them.
+
+    **Push vs pull:** Unlike Prometheus, InfluxDB metrics are pushed from Universe to InfluxDB on the configured interval. Universe does not need to be reachable by your monitoring infrastructure — InfluxDB only needs to be reachable by Universe.
+  </Tab>
+</Tabs>
+
+## Implementing a Custom MetricsProvider
+
+You can ship your own metrics backend as an extension by implementing the `MetricsProvider` interface and registering it via `MetricsRegistry`. See [Building Extensions](/extensions/building-extensions) for details.

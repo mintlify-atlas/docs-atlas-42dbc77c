@@ -1,0 +1,495 @@
+---
+title: "Template API: Browse and Sync Template Storage"
+sidebarTitle: "Templates"
+description: "Endpoints for listing templates, reading and editing their files, exporting or importing zip archives, and syncing template storage across cluster nodes."
+---
+
+Templates are the file trees that Universe copies into an instance's working directory before starting it. They live under `./templates/<group>/<name>/` on each node. The Template API lets you inspect what templates exist, read and modify their files over HTTP, export or import them as zip archives, pull the latest version from a remote storage backend (e.g., S3), and trigger a cluster-wide sync via Hazelcast.
+
+All template endpoints require a Bearer token with **ALL** permission.
+
+<Note>
+  Template **group** and **name** together form the unique identity of a template (e.g., group `server`, name `base` → path `./templates/server/base/`). Both are always required in path parameters.
+</Note>
+
+---
+
+## Endpoints
+
+### GET /api/templates
+
+Lists all templates available on this node, organized by group.
+
+**Authentication:** ALL permission required.
+
+```bash
+curl http://localhost:8080/api/templates \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+
+**Response — 200 OK**
+
+An array of objects, each describing one template.
+
+<ResponseField name="group" type="string">
+  The template group name (e.g., `server`, `global`, `lobby`).
+</ResponseField>
+
+<ResponseField name="name" type="string">
+  The template name within the group (e.g., `base`, `default`).
+</ResponseField>
+
+<ResponseField name="path" type="string">
+  Absolute filesystem path to the template directory on this node.
+</ResponseField>
+
+```json
+[
+  { "group": "server", "name": "base", "path": "/data/templates/server/base" },
+  { "group": "lobby",  "name": "default", "path": "/data/templates/lobby/default" }
+]
+```
+
+| Status | Meaning |
+|--------|---------|
+| `200` | List returned (may be empty). |
+| `401` | Unauthorized. |
+
+---
+
+### GET /api/templates/{group}/{name}
+
+Returns metadata for a specific template, including whether the template directory exists on this node.
+
+**Authentication:** ALL permission required.
+
+**Path Parameters**
+
+<ParamField path="group" type="string" required>
+  Template group (e.g., `server`).
+</ParamField>
+
+<ParamField path="name" type="string" required>
+  Template name within the group (e.g., `base`).
+</ParamField>
+
+```bash
+curl http://localhost:8080/api/templates/server/base \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+
+**Response — 200 OK**
+
+```json
+{
+  "group": "server",
+  "name": "base",
+  "path": "/data/templates/server/base"
+}
+```
+
+| Status | Meaning |
+|--------|---------|
+| `200` | Template found. |
+| `404` | Template directory does not exist on this node. |
+| `401` | Unauthorized. |
+
+---
+
+### GET /api/templates/{group}/{name}/files
+
+Lists all files within the template directory as an array of relative paths.
+
+**Authentication:** ALL permission required.
+
+**Path Parameters**
+
+<ParamField path="group" type="string" required>
+  Template group.
+</ParamField>
+
+<ParamField path="name" type="string" required>
+  Template name.
+</ParamField>
+
+```bash
+curl http://localhost:8080/api/templates/server/base/files \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+
+**Response — 200 OK**
+
+<ResponseField name="group" type="string">
+  The template group.
+</ResponseField>
+
+<ResponseField name="name" type="string">
+  The template name.
+</ResponseField>
+
+<ResponseField name="files" type="string[]">
+  Array of relative file paths within the template directory (e.g., `["server.properties", "plugins/Universe/config.yml"]`).
+</ResponseField>
+
+```json
+{
+  "group": "server",
+  "name": "base",
+  "files": [
+    "server.properties",
+    "eula.txt",
+    "plugins/Universe/config.yml"
+  ]
+}
+```
+
+| Status | Meaning |
+|--------|---------|
+| `200` | File list returned. |
+| `401` | Unauthorized. |
+
+---
+
+### GET /api/templates/{group}/{name}/files/{path}
+
+Returns the raw text content of a single file within the template. Responds with `text/plain`.
+
+**Authentication:** ALL permission required.
+
+**Path Parameters**
+
+<ParamField path="group" type="string" required>
+  Template group.
+</ParamField>
+
+<ParamField path="name" type="string" required>
+  Template name.
+</ParamField>
+
+<ParamField path="path" type="string" required>
+  Relative path to the file within the template directory (e.g., `server.properties`, `plugins/Universe/config.yml`). Supports nested paths — Ktor captures all remaining path segments.
+</ParamField>
+
+```bash
+curl http://localhost:8080/api/templates/server/base/files/server.properties \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+
+**Response — 200 OK** — Raw file content as `text/plain`.
+
+```properties
+server-port=%PORT%
+online-mode=false
+max-players=100
+```
+
+| Status | Meaning |
+|--------|---------|
+| `200` | File content returned as plain text. |
+| `404` | File does not exist. |
+| `401` | Unauthorized. |
+
+---
+
+### PATCH /api/templates/{group}/{name}/files/{path}
+
+Overwrites the content of an existing file in a **local** template (storage key `local`). The request body must be `text/plain`.
+
+**Authentication:** ALL permission required.
+
+**Path Parameters**
+
+<ParamField path="group" type="string" required>
+  Template group.
+</ParamField>
+
+<ParamField path="name" type="string" required>
+  Template name.
+</ParamField>
+
+<ParamField path="path" type="string" required>
+  Relative path of the file to update.
+</ParamField>
+
+```bash
+curl -X PATCH http://localhost:8080/api/templates/server/base/files/server.properties \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: text/plain" \
+  --data-binary "server-port=%PORT%
+online-mode=false
+max-players=200"
+```
+
+**Response — 200 OK**
+
+```json
+{
+  "message": "File updated",
+  "path": "server.properties"
+}
+```
+
+| Status | Meaning |
+|--------|---------|
+| `200` | File written successfully. |
+| `500` | Write failed (check node permissions). |
+| `401` | Unauthorized. |
+
+---
+
+### POST /api/templates/{group}/{name}/files/{path}
+
+Creates a **new** file in the template. Fails with `409` if the file already exists. Accepts any content type — use `application/octet-stream` for binary files such as JARs, images, or compressed archives.
+
+**Authentication:** ALL permission required.
+
+**Path Parameters**
+
+<ParamField path="group" type="string" required>
+  Template group.
+</ParamField>
+
+<ParamField path="name" type="string" required>
+  Template name.
+</ParamField>
+
+<ParamField path="path" type="string" required>
+  Relative path for the new file. Intermediate directories are created automatically.
+</ParamField>
+
+<Tabs>
+  <Tab title="Text file">
+    ```bash
+    curl -X POST http://localhost:8080/api/templates/server/base/files/eula.txt \
+      -H "Authorization: Bearer YOUR_API_KEY" \
+      -H "Content-Type: application/octet-stream" \
+      --data-binary "eula=true"
+    ```
+  </Tab>
+  <Tab title="Binary / JAR file">
+    ```bash
+    curl -X POST http://localhost:8080/api/templates/server/base/files/server.jar \
+      -H "Authorization: Bearer YOUR_API_KEY" \
+      -H "Content-Type: application/octet-stream" \
+      --data-binary @./paper-1.21.jar
+    ```
+  </Tab>
+</Tabs>
+
+**Response — 201 Created**
+
+```json
+{
+  "message": "File created",
+  "path": "eula.txt"
+}
+```
+
+| Status | Meaning |
+|--------|---------|
+| `201` | File created. |
+| `409` | File already exists. Use `PATCH` to update it. |
+| `401` | Unauthorized. |
+
+---
+
+### DELETE /api/templates/{group}/{name}/files/{path}
+
+Deletes a file from the template directory.
+
+**Authentication:** ALL permission required.
+
+**Path Parameters**
+
+<ParamField path="group" type="string" required>
+  Template group.
+</ParamField>
+
+<ParamField path="name" type="string" required>
+  Template name.
+</ParamField>
+
+<ParamField path="path" type="string" required>
+  Relative path of the file to delete.
+</ParamField>
+
+```bash
+curl -X DELETE \
+  http://localhost:8080/api/templates/server/base/files/old-plugin.jar \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+
+**Response — 200 OK**
+
+```json
+{
+  "message": "File deleted",
+  "path": "old-plugin.jar"
+}
+```
+
+| Status | Meaning |
+|--------|---------|
+| `200` | File deleted. |
+| `500` | Delete failed. |
+| `401` | Unauthorized. |
+
+---
+
+### POST /api/templates/{group}/{name}/export
+
+Exports the entire template directory as a `.zip` archive. The response is `application/zip` with a `Content-Disposition: attachment` header so browsers download it directly.
+
+**Authentication:** ALL permission required.
+
+**Path Parameters**
+
+<ParamField path="group" type="string" required>
+  Template group.
+</ParamField>
+
+<ParamField path="name" type="string" required>
+  Template name.
+</ParamField>
+
+```bash
+curl -X POST http://localhost:8080/api/templates/server/base/export \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -o server-base.zip
+```
+
+**Response — 200 OK** — Binary zip content. The `Content-Disposition` header will be `attachment; filename="server-base.zip"`.
+
+| Status | Meaning |
+|--------|---------|
+| `200` | Zip archive streamed. |
+| `404` | Template not found. |
+| `401` | Unauthorized. |
+
+---
+
+### POST /api/templates/{group}/{name}/import
+
+Imports a template from a zip archive, overwriting any existing files in the template directory. The request body must be `application/zip`.
+
+**Authentication:** ALL permission required.
+
+**Path Parameters**
+
+<ParamField path="group" type="string" required>
+  Template group to import into.
+</ParamField>
+
+<ParamField path="name" type="string" required>
+  Template name to import into.
+</ParamField>
+
+```bash
+curl -X POST http://localhost:8080/api/templates/server/base/import \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/zip" \
+  --data-binary @server-base.zip
+```
+
+**Response — 200 OK**
+
+```json
+{
+  "message": "Template imported",
+  "group": "server",
+  "name": "base"
+}
+```
+
+| Status | Meaning |
+|--------|---------|
+| `200` | Import succeeded. |
+| `500` | Import failed (check zip format). |
+| `401` | Unauthorized. |
+
+---
+
+### POST /api/templates/{group}/{name}/sync
+
+Downloads the latest version of a specific template from a registered remote storage provider and writes it to the local template directory.
+
+**Authentication:** ALL permission required.
+
+**Path Parameters**
+
+<ParamField path="group" type="string" required>
+  Template group.
+</ParamField>
+
+<ParamField path="name" type="string" required>
+  Template name.
+</ParamField>
+
+**Request Body**
+
+<ParamField body="storage" type="string" required>
+  Key of the registered storage provider to pull from (e.g., `s3`, `ftp`). Must match a provider registered via the `TemplateStorageRegistry`.
+</ParamField>
+
+```bash
+curl -X POST http://localhost:8080/api/templates/server/base/sync \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"storage": "s3"}'
+```
+
+**Response — 200 OK**
+
+```json
+{
+  "message": "Template synced from s3",
+  "group": "server",
+  "name": "base",
+  "storage": "s3"
+}
+```
+
+| Status | Meaning |
+|--------|---------|
+| `200` | Sync succeeded. |
+| `400` | Storage provider key not found. |
+| `500` | Sync failed. |
+| `401` | Unauthorized. |
+
+---
+
+### POST /api/templates/sync
+
+Dispatches a cluster-wide template sync task via Hazelcast. The `pattern` field supports glob-style matching to sync all matching templates across nodes.
+
+**Authentication:** ALL permission required.
+
+**Request Body**
+
+<ParamField body="pattern" type="string" required>
+  Template sync pattern. Examples: `default/*` (all templates in the `default` group), `server/base` (a specific template), `*` (all templates).
+</ParamField>
+
+```bash
+curl -X POST http://localhost:8080/api/templates/sync \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"pattern": "server/*"}'
+```
+
+**Response — 200 OK**
+
+```json
+{
+  "message": "Sync triggered for pattern: server/*"
+}
+```
+
+<Tip>
+  This endpoint is equivalent to running `template sync server/* <node>` in the Universe console. It is the recommended approach for pushing template updates to the entire cluster in one call.
+</Tip>
+
+| Status | Meaning |
+|--------|---------|
+| `200` | Sync task dispatched. |
+| `401` | Unauthorized. |

@@ -1,0 +1,146 @@
+{
+  "projectType": "infrastructure",
+  "projectName": "Universe",
+  "projectDescription": "A distributed single-JAR cluster orchestrator for deploying and managing application instances across nodes, with a pluggable runtime and extension system.",
+  "theme": "aspen",
+  "primaryColor": "#fb6304",
+  "lightColor": "#d40404",
+  "darkColor": null,
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Getting Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "architecture"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "configuration/node-config",
+              "configuration/instance-config",
+              "configuration/database",
+              "configuration/templates"
+            ]
+          },
+          {
+            "group": "Runtimes",
+            "pages": [
+              "runtimes/overview",
+              "runtimes/screen-tmux",
+              "runtimes/docker",
+              "runtimes/kubernetes"
+            ]
+          },
+          {
+            "group": "Extensions",
+            "pages": [
+              "extensions/overview",
+              "extensions/storage-s3",
+              "extensions/tailscale",
+              "extensions/gitops",
+              "extensions/argocd",
+              "extensions/discord",
+              "extensions/metrics",
+              "extensions/databases",
+              "extensions/building-extensions"
+            ]
+          },
+          {
+            "group": "Minecraft Integration",
+            "pages": [
+              "minecraft/overview",
+              "minecraft/plugins",
+              "minecraft/proxy-plugins",
+              "minecraft/api"
+            ]
+          },
+          {
+            "group": "Operations",
+            "pages": [
+              "operations/console-commands",
+              "operations/networking",
+              "operations/logging",
+              "operations/security"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "api-reference/overview",
+              "api-reference/authentication"
+            ]
+          },
+          {
+            "group": "Endpoints",
+            "pages": [
+              "api-reference/instances",
+              "api-reference/configurations",
+              "api-reference/templates",
+              "api-reference/cluster",
+              "api-reference/node",
+              "api-reference/commands",
+              "api-reference/websockets"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Master/Wrapper cluster topology with Hazelcast-based task dispatch",
+    "Template-based instance deployment with dynamic variable replacement",
+    "Pluggable runtimes: screen, tmux, Docker, and Kubernetes",
+    "S3-backed remote template storage for multi-node setups",
+    "Tailscale mesh-network IP template variables for cross-node connectivity",
+    "Full REST API + interactive WebSocket console",
+    "Extension system for custom runtimes, storage, metrics, and integrations",
+    "GitOps and ArgoCD integration for declarative configuration management",
+    "First-class Minecraft platform support (Paper, Spigot, Velocity, BungeeCord, Folia)",
+    "Single fat JAR deployment — Master and Wrapper from the same artifact",
+    "Port conflict prevention via three-source port allocation strategy",
+    "Prometheus and InfluxDB metrics export extensions"
+  ],
+  "publicApiSurface": [
+    "GET /api/instances",
+    "POST /api/instances",
+    "DELETE /api/instances/{id}",
+    "PATCH /api/instances/{id}/lifecycle",
+    "GET /api/instances/{id}/logs",
+    "WS /api/instances/{id}/live-log",
+    "POST /api/instances/{id}/execute",
+    "PUT /api/instances/{id}/state",
+    "GET /api/configurations",
+    "GET /api/configurations/{name}",
+    "PUT /api/configurations/{name}",
+    "DELETE /api/configurations/{name}",
+    "GET /api/templates",
+    "GET /api/templates/{group}/{name}",
+    "POST /api/templates/sync",
+    "GET /api/cluster/nodes",
+    "GET /api/cluster/nodes/{id}",
+    "GET /api/node",
+    "GET /api/node/config",
+    "GET /api/ping",
+    "POST /api/commands/execute",
+    "WS /api/console",
+    "Extension interface: id(), version(), masterOnly(), reloadable(), onLoad(), onUnload(), onReload()",
+    "RuntimeProvider interface: start(), stop(), executeCommand()",
+    "TemplateStorageProvider interface",
+    "TemplateVariableProvider interface",
+    "DatabaseProvider interface",
+    "MetricsProvider interface",
+    "UniverseAPI (Minecraft): InstanceManager, ConfigurationManager, TemplateManager",
+    "Universe.register(plugin) / Universe.unregister()"
+  ]
+}

@@ -1,0 +1,172 @@
+---
+title: "Authenticate with Universe API Using Bearer Tokens"
+sidebarTitle: "Authentication"
+description: "Generate API keys via the Universe console, pass them as Bearer tokens, understand ALL vs PUBLIC permission levels, and handle rate limit responses."
+---
+
+Every request to the Universe REST API (except the open `/ping` and `/metrics` endpoints) must carry a valid API key. Universe uses **Bearer token authentication** — the key is passed as a plain string in the `Authorization` request header. Keys are created and managed directly from the Universe master-node console.
+
+## How It Works
+
+When a request arrives the API reads the `Authorization` header, strips the `Bearer ` prefix, and looks up the token in the database (with a 15-second in-memory cache to avoid hammering the database on every call). If the token is unknown or missing, the API returns `401 Unauthorized`. If the token resolves to a `PUBLIC` key that has already exceeded its sliding window quota, the API returns `429 Too Many Requests`.
+
+```text
+Authorization: Bearer YOUR_API_KEY
+```
+
+## Permission Levels
+
+Universe defines two permission levels in `ApiPermission`:
+
+<Tabs>
+  <Tab title="ALL">
+    `ALL` keys have unrestricted access to every endpoint — instance creation and deletion, configuration management, template editing, console commands, and log streaming. They are also **exempt from rate limiting entirely**.
+
+    Use `ALL` keys for automation pipelines, internal services, and trusted operator tooling.
+
+    <Warning>
+      `ALL` keys grant full control over your entire cluster. Treat them like root credentials — store them in secrets managers, never commit them to source control, and rotate them if they are ever exposed.
+    </Warning>
+  </Tab>
+  <Tab title="PUBLIC">
+    `PUBLIC` keys provide read-only access to public-facing endpoints such as node info, cluster status, and configuration listings. All instance operations require `ALL` permission — no instance endpoint is reachable with a `PUBLIC` key.
+
+    `PUBLIC` keys are subject to rate limiting: **100 requests per 60-second sliding window** per key.
+  </Tab>
+</Tabs>
+
+## Generating API Keys
+
+Keys are created and managed from the interactive console on the Universe master node. Open a console session and use the `key` commands:
+
+<Steps>
+  <Step title="Create an ALL key">
+    Run the following command to create a full-access admin key named `automation`:
+
+    ```console
+    key create automation ALL
+    ```
+
+    The console will print the generated bearer token. Copy it immediately — it is only displayed once.
+  </Step>
+  <Step title="Create a PUBLIC key">
+    To create a read-only key for an external dashboard or monitoring tool:
+
+    ```console
+    key create dashboard PUBLIC
+    ```
+  </Step>
+  <Step title="List existing keys">
+    View all active keys with their IDs and permission levels:
+
+    ```console
+    key list
+    ```
+  </Step>
+  <Step title="Delete a key">
+    Revoke a key by its ID:
+
+    ```console
+    key delete <id>
+    ```
+
+    Deletion is immediate — in-flight requests using the revoked token will fail on their next cache miss (within 15 seconds).
+  </Step>
+</Steps>
+
+## Making Authenticated Requests
+
+Pass the bearer token in the `Authorization` header of every HTTP request:
+
+```bash
+curl -H "Authorization: Bearer YOUR_KEY" \
+     http://localhost:7000/api/instances
+```
+
+<CodeGroup>
+  ```bash cURL
+  curl -X POST http://localhost:7000/api/instances \
+    -H "Authorization: Bearer YOUR_KEY" \
+    -H "Content-Type: application/json" \
+    -d '{"configurationName": "lobby"}'
+  ```
+
+  ```python Python
+  import requests
+
+  headers = {"Authorization": "Bearer YOUR_KEY"}
+  response = requests.get("http://localhost:7000/api/instances", headers=headers)
+  print(response.json())
+  ```
+
+  ```typescript TypeScript
+  const response = await fetch("http://localhost:7000/api/instances", {
+    headers: { Authorization: "Bearer YOUR_KEY" },
+  });
+  const instances = await response.json();
+  ```
+</CodeGroup>
+
+## Rate Limiting
+
+The rate limiter applies a **sliding window** algorithm per API key. A `PUBLIC` key may make at most **100 calls within any 60-second window**. Once that limit is reached the API responds with `429 Too Many Requests` and a JSON body telling you when to retry:
+
+```json
+{
+  "error": "Rate limit exceeded",
+  "message": "100 calls were already made during 1m",
+  "retryAfterMs": 45000
+}
+```
+
+<Accordion title="Rate limit implementation details">
+  The rate limiter reads the `Authorization` header directly in the `onCall` phase — before Ktor's authentication interceptor runs — so the window check happens on every request with zero overhead from the auth pipeline.
+
+  Requests from unauthenticated callers (missing or malformed `Authorization` header) are rejected immediately with `401` by the rate-limiting plugin before reaching any route handler. `ALL` keys skip the window check entirely and are always allowed through.
+</Accordion>
+
+<Tip>
+  If you are building automation that needs to stay within the `PUBLIC` limit, cache responses locally and batch read operations where possible. Switch to an `ALL` key for workflows that require sustained high-throughput access.
+</Tip>
+
+## WebSocket Authentication
+
+The two WebSocket endpoints (`/instances/{id}/live-log` and `/console`) require the same Bearer token in the HTTP upgrade request headers:
+
+```bash
+# Live log stream
+websocat -H "Authorization: Bearer YOUR_KEY" \
+  ws://localhost:7000/api/instances/a1b2c3/live-log
+
+# Interactive console
+websocat -H "Authorization: Bearer YOUR_KEY" \
+  ws://localhost:7000/api/console
+```
+
+Authentication is validated during the handshake. If the token is missing or invalid the server returns `101` is never sent and the connection is closed with `401`.
+
+<Note>
+  `GET /api/ping` and `GET /api/metrics` are the only two endpoints that do not require authentication. `/ping` returns basic node status and is safe to use for health checks. `/metrics` returns Prometheus exposition-format data intended for scraping.
+</Note>
+
+## Error Reference
+
+<ResponseField name="401 Unauthorized" type="object">
+  Returned when the `Authorization` header is absent, malformed, or contains an unknown token.
+
+  ```json
+  { "error": "Unauthorized" }
+  ```
+</ResponseField>
+
+<ResponseField name="429 Too Many Requests" type="object">
+  Returned when a `PUBLIC` key exceeds 100 requests in a 60-second window.
+
+  ```json
+  {
+    "error": "Rate limit exceeded",
+    "message": "100 calls were already made during 1m",
+    "retryAfterMs": 45000
+  }
+  ```
+</ResponseField>

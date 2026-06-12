@@ -1,0 +1,190 @@
+---
+title: "API Keys and Security Configuration for Universe"
+sidebarTitle: "Security"
+description: "Bearer token authentication, ALL vs PUBLIC API key permission levels, sliding-window rate limiting, CORS, and infrastructure hardening best practices."
+---
+
+Every request to the Universe REST API must carry a valid Bearer token. There are no anonymous endpoints — even health checks benefit from token authentication when the cluster is internet-accessible. This page explains how to create and manage API keys, what each permission level allows, and how rate limiting and infrastructure controls protect the cluster.
+
+## Authentication Overview
+
+Universe uses Ktor's `Authentication` plugin configured with the `bearer` scheme. Include the token in every HTTP request:
+
+```bash
+curl -H "Authorization: Bearer unv_your_token_here" \
+  http://localhost:7000/api/instances
+```
+
+The server resolves the token to an `ApiKey` record, validates the permission level required by the endpoint, and either allows the request or returns `401 Unauthorized`.
+
+An in-memory `ApiKeyCache` caches each token lookup for **15 seconds** before re-querying the database. This avoids a database round-trip on every request while still propagating key deletions within a predictable window.
+
+---
+
+## Permission Levels
+
+API keys carry one of two permission levels defined in the `ApiPermission` enum.
+
+<CardGroup cols={2}>
+  <Card title="ALL" icon="shield-check">
+    Full admin access to every endpoint, including instance creation and deletion, configuration management, template sync, and executing commands on instances.
+
+    Keys with `ALL` permission **bypass rate limiting entirely** — every request is accepted regardless of call volume.
+  </Card>
+  <Card title="PUBLIC" icon="eye">
+    Read-only access to status, listing, and informational endpoints. Write and lifecycle-control endpoints reject `PUBLIC` keys with `401`.
+
+    `PUBLIC` keys are subject to a sliding-window rate limit: **100 calls per 60 seconds** per key. Exceeding the limit returns `429 Too Many Requests`.
+  </Card>
+</CardGroup>
+
+| Feature | `ALL` | `PUBLIC` |
+|---|---|---|
+| Instance create / stop / kill / restart | ✅ | ❌ |
+| Instance list / info / logs | ✅ | ✅ |
+| Configuration read/write | ✅ | ❌ |
+| Template sync | ✅ | ❌ |
+| Execute console commands | ✅ | ❌ |
+| Rate limiting | Bypassed | 100 req / 60 s |
+
+---
+
+## Managing API Keys
+
+API keys are managed through the `key` console commands. These commands are available in the interactive console and via `POST /api/commands/execute`.
+
+### Creating a Key
+
+```bash
+key create <keyId> <permission>
+```
+
+`keyId` is a human-readable label (e.g., `ci-deploy`, `grafana-reader`). The permission must be `ALL` or `PUBLIC` (case-insensitive). On success the full token is printed once:
+
+```
+✓ API key created:
+  ID:         ci-deploy
+  Permission: ALL
+  Token:      unv_4a7f3c2e1b9d0e8f...
+  → Save this token now — it cannot be retrieved later.
+```
+
+<Warning>
+  The full token is displayed exactly once at creation time and is never retrievable afterwards. Copy it immediately and store it in a secrets manager or environment variable. If the token is lost, delete the key and create a replacement.
+</Warning>
+
+### Listing Keys
+
+```bash
+key list
+```
+
+Prints all registered keys with their ID, permission level, and a masked token (`abcd...wxyz`). Tokens are never returned in full from `key list`.
+
+### Deleting a Key
+
+```bash
+key delete <keyId>
+```
+
+Permanently removes the key from the database. Any in-flight requests using that token will fail within 15 seconds as the cache entry expires.
+
+---
+
+## Rate Limiting
+
+Rate limiting is applied at the route level using the `RateLimiting` Ktor plugin. The plugin reads the `Authorization` header directly — before the authentication interceptor runs — so it can act on requests before they reach any handler.
+
+```
+Default rate limit: 100 calls per 60 seconds (per PUBLIC key)
+```
+
+<Tabs>
+  <Tab title="Allowed response">
+    Requests within the limit are passed through normally. No additional headers are added to the response.
+  </Tab>
+  <Tab title="Rate-limited response">
+    When a `PUBLIC` key exceeds 100 calls in the 60-second sliding window, the server responds:
+
+    ```json
+    HTTP 429 Too Many Requests
+
+    {
+      "error": "Rate limit exceeded",
+      "message": "100 calls were already made during 1m",
+      "retryAfterMs": 42000
+    }
+    ```
+
+    `retryAfterMs` indicates the milliseconds until the oldest call in the current window ages out, giving the client a precise retry time.
+  </Tab>
+  <Tab title="Unauthenticated response">
+    Requests with no `Authorization` header, a missing token, or an invalid token are rejected before the window is checked:
+
+    ```json
+    HTTP 401 Unauthorized
+
+    {
+      "error": "Authentication required"
+    }
+    ```
+  </Tab>
+</Tabs>
+
+<Note>
+  `ALL` keys bypass rate limiting entirely. Use them only for trusted automation (CI/CD pipelines, internal tooling). For read-only dashboards and monitoring systems, use `PUBLIC` keys so rate limits apply and a misbehaving client cannot affect cluster operations.
+</Note>
+
+---
+
+## CORS
+
+CORS is enabled by default in the Ktor server, allowing browser-based clients and dashboards to call the REST API from any origin. For production deployments where the API should only be called from known front-ends, restrict the allowed origins in the Ktor CORS configuration.
+
+---
+
+## WebSocket Authentication
+
+WebSocket endpoints (`/api/instances/{id}/live-log` and `/api/console`) require the same Bearer token as HTTP endpoints. The token must be provided in the `Authorization` header during the initial HTTP upgrade handshake.
+
+<Note>
+  Browser WebSocket clients (`new WebSocket(url)`) cannot set arbitrary headers. In browser contexts, pass the token as a query parameter only if your deployment includes a reverse proxy that converts it to a header. Direct token exposure in URLs is not recommended for production use.
+</Note>
+
+```bash
+# CLI example using wscat
+wscat -c "ws://localhost:7000/api/instances/ab12cd/live-log" \
+  -H "Authorization: Bearer unv_your_token_here"
+```
+
+---
+
+## Infrastructure Hardening
+
+<Warning>
+  The Hazelcast port (`6000` by default) grants full cluster membership to any process that can connect. A remote process that joins the cluster can execute Hazelcast tasks, read shared maps, and dispatch arbitrary work to every node. **Never expose the Hazelcast port to the public internet.** Restrict it to your internal network or VPN at the firewall level.
+</Warning>
+
+<Warning>
+  When using the `runtime-docker` extension, the Universe process mounts the Docker socket (`/var/run/docker.sock`) into the container. Any process with access to the Universe container gains indirect access to the Docker daemon on the host, which is equivalent to root access on that machine. Run the Universe container with the minimum necessary Linux capabilities and restrict access to the Universe REST API accordingly.
+</Warning>
+
+### Best Practices
+
+<Accordion title="Key management">
+  - Create one `ALL` key per automated system (CI/CD pipeline, internal orchestration scripts) and rotate it on a schedule.
+  - Create separate `PUBLIC` keys for monitoring, dashboards, and read-only integrations. These are rate-limited and cannot modify cluster state.
+  - Delete keys for decommissioned systems immediately.
+  - Never commit tokens to source control. Use environment variables or a secrets manager.
+</Accordion>
+
+<Accordion title="Network isolation">
+  - Place the Hazelcast port (`6000`) behind a firewall that allows only Master ↔ Wrapper traffic.
+  - Expose the REST API port (`7000`) only to trusted networks or behind an authenticated reverse proxy.
+  - Use Tailscale or a VPN for cross-datacenter clusters so neither the Hazelcast port nor instance ports need to be publicly routable.
+</Accordion>
+
+<Accordion title="Docker runtime">
+  - Mount the Docker socket read-only where possible, or use a Docker socket proxy (e.g., Tecnativa/docker-socket-proxy) that allows only the specific Docker API calls Universe needs.
+  - Do not run Universe as `root` inside the container unless required by the socket permissions on your host.
+</Accordion>

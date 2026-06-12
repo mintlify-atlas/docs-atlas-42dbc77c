@@ -1,0 +1,142 @@
+---
+title: "GitOps Extension: Sync Templates from Git"
+sidebarTitle: "GitOps"
+description: "Track a Git repository and pull changes on a schedule, copying updated templates and instance configurations into the live Universe working directories."
+---
+
+The GitOps extension brings version-controlled configuration management to Universe. It clones a Git repository at startup, then pulls updates on a configurable interval, copying the repo's `templates/` and `configuration/` directories into the live Universe directories after each pull. No native `git` binary is required — the extension uses JGit 7.6.0 for pure-Java Git operations.
+
+## When to Use This
+
+- You want version history and pull-request reviews for changes to templates and instance configurations.
+- You run a CI/CD pipeline that builds server JARs or configuration files and pushes them to a Git repository.
+- You need automated rollouts when changes land on a branch — Universe will pick them up within `intervalMs` milliseconds.
+
+## How It Works
+
+<Steps>
+  <Step title="Clone on startup">
+    On `onLoad()`, the extension clones the configured repository to `targetPath` (default: `./git-sync`). If the directory already exists and contains a valid Git repository, it opens it in place instead of cloning again.
+  </Step>
+  <Step title="Scheduled pull">
+    A single-threaded scheduled executor fires every `intervalMs` milliseconds and runs a Git `pull` against the configured `branch`.
+  </Step>
+  <Step title="File copy">
+    After each successful pull, the extension copies `{targetPath}/templates/` to `./templates/` and `{targetPath}/configuration/` to `./configuration/`, overwriting any existing local files.
+  </Step>
+</Steps>
+
+## Configuration
+
+Create `./extensions/gitops/config.json`:
+
+```json
+{
+  "url": "https://github.com/your-org/universe-config.git",
+  "branch": "main",
+  "targetPath": "./git-sync",
+  "intervalMs": 300000,
+  "enabled": true,
+  "username": "",
+  "password": "",
+  "sshKeyPath": ""
+}
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `url` | `""` | Git repository URL (HTTPS or SSH `git@` format) |
+| `branch` | `"main"` | Branch to track |
+| `targetPath` | `"./git-sync"` | Local directory where the repository is cloned |
+| `intervalMs` | `300000` | Pull interval in milliseconds (default: 5 minutes) |
+| `enabled` | `false` | Must be `true` for syncing to be active |
+| `username` | `""` | HTTP Basic Auth username for private HTTPS repositories |
+| `password` | `""` | HTTP Basic Auth password or personal access token |
+| `sshKeyPath` | `""` | Path to an SSH private key file for `git@` URLs |
+
+## Repository Structure
+
+Your Git repository must mirror the Universe directory layout:
+
+```
+universe-config/
+  templates/
+    server/
+      base/
+        server.properties
+        plugins/
+    lobby/
+      default/
+        server.properties
+        world/
+  configuration/
+    lobby.json
+    minigames.json
+```
+
+The extension copies `templates/` and `configuration/` as top-level directories. Files outside these two directories in the repository are ignored.
+
+## Authentication Examples
+
+<Tabs>
+  <Tab title="HTTPS with PAT">
+    Use a GitHub (or GitLab) personal access token as the `password` field:
+
+    ```json
+    {
+      "url": "https://github.com/your-org/universe-config.git",
+      "branch": "main",
+      "username": "your-github-username",
+      "password": "ghp_xxxxxxxxxxxxxxxxxxxx",
+      "enabled": true
+    }
+    ```
+  </Tab>
+  <Tab title="SSH Key">
+    Use an SSH private key for `git@` style URLs:
+
+    ```json
+    {
+      "url": "git@github.com:your-org/universe-config.git",
+      "branch": "main",
+      "sshKeyPath": "./.ssh/id_rsa",
+      "enabled": true
+    }
+    ```
+
+    Make sure the corresponding public key is added to your repository's deploy keys.
+  </Tab>
+  <Tab title="Public Repository">
+    For public repositories no authentication is needed:
+
+    ```json
+    {
+      "url": "https://github.com/your-org/universe-config.git",
+      "branch": "main",
+      "enabled": true
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## Manual Sync
+
+The extension syncs automatically on its configured interval. To force an immediate sync without restarting Universe, trigger a reload:
+
+```bash
+extension reload gitops
+```
+
+Or via the REST API:
+
+```bash
+curl -X POST http://localhost:7000/api/commands/execute \
+  -H "Content-Type: application/json" \
+  -d '{"command": "extension reload gitops"}'
+```
+
+`onReload()` re-pulls the latest commits and copies files immediately, then continues the background schedule as before.
+
+<Warning>
+  GitOps **overwrites** local files on every pull. Any changes you make directly to `./templates/` or `./configuration/` will be lost the next time the extension syncs. Treat the Git repository as the single source of truth and make all changes there.
+</Warning>

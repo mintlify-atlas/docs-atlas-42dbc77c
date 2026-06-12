@@ -1,0 +1,357 @@
+---
+title: "Configuration API: Manage Instance Definitions"
+sidebarTitle: "Configurations"
+description: "CRUD endpoints for Universe instance configurations — define runtime, resource limits, port ranges, templates, and environment variables for deployable instances."
+---
+
+A **Configuration** is the blueprint Universe uses to create instances. It defines everything from which runtime to use and how much RAM to allocate, to which templates to install, which ports to expose, and what environment variables to inject. Configurations are stored in the cluster's shared Hazelcast state and on disk under `./configuration/`.
+
+All endpoints in this group require a Bearer token with **ALL** permission.
+
+<Note>
+  The `name` in the URL path always takes precedence over any `name` field in the request body — the server calls `.copy(name = name)` before saving. Always ensure the path name and intended configuration name match.
+</Note>
+
+---
+
+## The Configuration Object
+
+<ResponseField name="name" type="string" required>
+  Unique identifier for this configuration (e.g., `lobby`, `game-duels`). Used as the key in all API paths and in `CreateInstanceRequest`.
+</ResponseField>
+
+<ResponseField name="runtime" type="string">
+  Runtime provider key. Defaults to `screen`. Built-in options: `screen`, `tmux`. Extension-provided: `docker`, `k8s`.
+</ResponseField>
+
+<ResponseField name="command" type="string">
+  Shell command to execute when starting the instance (e.g., `java -Xmx2048M -jar server.jar`).
+</ResponseField>
+
+<ResponseField name="static" type="boolean">
+  Whether this is a static (persistent) instance whose working directory survives restarts. Defaults to `false`.
+</ResponseField>
+
+<ResponseField name="ramMB" type="integer">
+  RAM in megabytes to allocate per instance. Defaults to `2048`. Used for node resource scheduling.
+</ResponseField>
+
+<ResponseField name="cpu" type="integer">
+  CPU units per instance. `100` = 1 full core. Defaults to `100`.
+</ResponseField>
+
+<ResponseField name="instanceGroups" type="string[]">
+  Logical group tags this configuration belongs to (e.g., `["lobby", "hub"]`). Used for group-based queries.
+</ResponseField>
+
+<ResponseField name="nodes" type="string[]">
+  List of node IDs allowed to host instances of this configuration. Defaults to `["node-1"]`. Instances are only scheduled onto nodes in this list.
+</ResponseField>
+
+<ResponseField name="hostAddress" type="string">
+  Host address advertised to clients for connecting to instances. Supports template variables like `%TAILSCALE_IP%`. Defaults to `127.0.0.1`.
+</ResponseField>
+
+<ResponseField name="availablePorts" type="PortRange object">
+  <Expandable title="PortRange fields">
+    <ResponseField name="min" type="integer">
+      Minimum port number in the allocation range (e.g., `25565`).
+    </ResponseField>
+    <ResponseField name="max" type="integer">
+      Maximum port number in the allocation range (e.g., `25570`).
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="minimumServiceCount" type="integer">
+  Minimum number of running instances to maintain for this configuration. The master node will auto-create new instances if the count falls below this. Defaults to `1`.
+</ResponseField>
+
+<ResponseField name="environmentVariables" type="object">
+  Key-value map of environment variables injected into the instance process. The default includes `{"UNIVERSE_INSTANCE_ID": "%INSTANCE_ID%"}`.
+</ResponseField>
+
+<ResponseField name="templateInstallationConfig" type="TemplateInstallationConfig object">
+  <Expandable title="TemplateInstallationConfig fields">
+    <ResponseField name="allOf" type="Template[]">
+      Templates that are always installed (all required). Each template has `name`, `group`, `storage`, and `priority` fields.
+    </ResponseField>
+    <ResponseField name="allInGroups" type="string[]">
+      Template group names whose entire contents are installed.
+    </ResponseField>
+    <ResponseField name="oneOf" type="Template[]">
+      Template list from which exactly one is selected (e.g., versioned server jars).
+    </ResponseField>
+    <ResponseField name="oneInGroups" type="string[]">
+      Template group names from which exactly one template is selected.
+    </ResponseField>
+    <ResponseField name="onTemplatePasteOverridePresentFiles" type="boolean">
+      When `true`, template files overwrite files already present in the working directory. Defaults to `false`.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="fileModifications" type="string[]">
+  Relative paths of files to scan for variable replacement after templates are installed (e.g., `["server.properties", "plugins/Universe/config.yml"]`).
+</ResponseField>
+
+<ResponseField name="properties" type="object">
+  Custom key-value map for user-defined template variables. Each `{"myKey": "myValue"}` entry makes `%myKey%` available as a replacement token in `fileModifications` files.
+</ResponseField>
+
+<ResponseField name="additionalPorts" type="AdditionalPort[]">
+  Additional ports to expose beyond the primary `allocatedPort`. Each entry has `port` (integer), `protocol` (default `"TCP"`), and `name` (string label) fields.
+</ResponseField>
+
+---
+
+## Endpoints
+
+### GET /api/configurations
+
+Returns all instance configurations currently stored in the cluster state.
+
+**Authentication:** ALL permission required.
+
+```bash
+curl http://localhost:8080/api/configurations \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+
+**Response — 200 OK**
+
+An array of `Configuration` objects.
+
+```json
+[
+  {
+    "name": "lobby",
+    "runtime": "screen",
+    "command": "java -Xmx2048M -jar server.jar",
+    "static": false,
+    "ramMB": 2048,
+    "cpu": 100,
+    "instanceGroups": ["lobby"],
+    "nodes": ["node-1"],
+    "hostAddress": "127.0.0.1",
+    "availablePorts": { "min": 25565, "max": 25570 },
+    "minimumServiceCount": 1,
+    "environmentVariables": { "UNIVERSE_INSTANCE_ID": "%INSTANCE_ID%" },
+    "templateInstallationConfig": {
+      "allOf": [{ "name": "base", "group": "server", "storage": "local", "priority": 0 }],
+      "allInGroups": [],
+      "oneOf": [],
+      "oneInGroups": [],
+      "onTemplatePasteOverridePresentFiles": false
+    },
+    "fileModifications": ["server.properties"],
+    "properties": {},
+    "additionalPorts": []
+  }
+]
+```
+
+| Status | Meaning |
+|--------|---------|
+| `200` | Success, array returned (may be empty). |
+| `401` | Unauthorized. |
+
+---
+
+### GET /api/configurations/{name}
+
+Returns a single configuration by its unique name.
+
+**Authentication:** ALL permission required.
+
+**Path Parameters**
+
+<ParamField path="name" type="string" required>
+  The configuration name (e.g., `lobby`).
+</ParamField>
+
+```bash
+curl http://localhost:8080/api/configurations/lobby \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+
+**Response — 200 OK**
+
+A single `Configuration` object.
+
+| Status | Meaning |
+|--------|---------|
+| `200` | Configuration found and returned. |
+| `404` | No configuration with this name exists. |
+| `401` | Unauthorized. |
+
+---
+
+### PUT /api/configurations/{name}
+
+Creates or fully replaces a configuration. The request body must be a complete `Configuration` object. The `name` field in the body is ignored — the path parameter is always used as the authoritative name.
+
+**Authentication:** ALL permission required.
+
+**Path Parameters**
+
+<ParamField path="name" type="string" required>
+  The configuration name to create or overwrite (e.g., `lobby`).
+</ParamField>
+
+**Request Body** — Complete `Configuration` object.
+
+<ParamField body="name" type="string">
+  Ignored; the URL path parameter is used. May be omitted.
+</ParamField>
+
+<ParamField body="runtime" type="string">
+  Runtime provider key. Defaults to `screen`.
+</ParamField>
+
+<ParamField body="command" type="string">
+  Start command for the instance process.
+</ParamField>
+
+<ParamField body="static" type="boolean">
+  Whether the instance is persistent across restarts. Defaults to `false`.
+</ParamField>
+
+<ParamField body="ramMB" type="integer">
+  RAM to allocate in megabytes. Defaults to `2048`.
+</ParamField>
+
+<ParamField body="cpu" type="integer">
+  CPU units to allocate (100 = 1 core). Defaults to `100`.
+</ParamField>
+
+<ParamField body="instanceGroups" type="string[]">
+  Group tags for this configuration.
+</ParamField>
+
+<ParamField body="nodes" type="string[]">
+  Node IDs eligible to run instances of this configuration.
+</ParamField>
+
+<ParamField body="hostAddress" type="string">
+  Host address for client connections.
+</ParamField>
+
+<ParamField body="availablePorts" type="object">
+  Port allocation range with `min` and `max` fields.
+</ParamField>
+
+<ParamField body="minimumServiceCount" type="integer">
+  Minimum live instance count to maintain.
+</ParamField>
+
+<ParamField body="environmentVariables" type="object">
+  Environment variable key-value map.
+</ParamField>
+
+<ParamField body="templateInstallationConfig" type="object">
+  Template installation instructions including `allOf`, `allInGroups`, `oneOf`, `oneInGroups`, and `onTemplatePasteOverridePresentFiles`.
+</ParamField>
+
+<ParamField body="fileModifications" type="string[]">
+  List of relative file paths to scan for variable replacement.
+</ParamField>
+
+<ParamField body="properties" type="object">
+  Custom template variable map (keys become `%KEY%` tokens).
+</ParamField>
+
+<ParamField body="additionalPorts" type="array">
+  Additional ports to expose, each with `port`, `protocol`, and `name`.
+</ParamField>
+
+<CodeGroup>
+```bash Create configuration
+curl -X PUT http://localhost:8080/api/configurations/lobby \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "runtime": "screen",
+    "command": "java -Xmx2048M -jar server.jar",
+    "static": false,
+    "ramMB": 2048,
+    "cpu": 100,
+    "instanceGroups": ["lobby"],
+    "nodes": ["node-1"],
+    "hostAddress": "127.0.0.1",
+    "availablePorts": { "min": 25565, "max": 25570 },
+    "minimumServiceCount": 1,
+    "environmentVariables": { "UNIVERSE_INSTANCE_ID": "%INSTANCE_ID%" },
+    "templateInstallationConfig": {
+      "allOf": [{ "name": "base", "group": "server", "storage": "local", "priority": 0 }],
+      "allInGroups": [],
+      "oneOf": [],
+      "oneInGroups": [],
+      "onTemplatePasteOverridePresentFiles": false
+    },
+    "fileModifications": ["server.properties"],
+    "properties": {},
+    "additionalPorts": []
+  }'
+```
+```bash Update RAM only (full body still required)
+curl -X PUT http://localhost:8080/api/configurations/lobby \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "runtime": "screen",
+    "command": "java -Xmx4096M -jar server.jar",
+    "ramMB": 4096,
+    "cpu": 200,
+    "nodes": ["node-1"],
+    "hostAddress": "127.0.0.1",
+    "availablePorts": { "min": 25565, "max": 25570 },
+    "minimumServiceCount": 1,
+    "environmentVariables": {},
+    "templateInstallationConfig": {},
+    "fileModifications": [],
+    "properties": {}
+  }'
+```
+</CodeGroup>
+
+**Response — 204 No Content**
+
+No body is returned on success.
+
+| Status | Meaning |
+|--------|---------|
+| `204` | Configuration saved. |
+| `401` | Unauthorized. |
+
+<Warning>
+  `PUT` performs a **full replacement**. Any fields omitted from the request body will revert to their default values. Read the current configuration first if you only intend to update one field.
+</Warning>
+
+---
+
+### DELETE /api/configurations/{name}
+
+Permanently removes a configuration from the cluster state. Existing running instances that were created from this configuration are not affected — only future deployments are blocked.
+
+**Authentication:** ALL permission required.
+
+**Path Parameters**
+
+<ParamField path="name" type="string" required>
+  The name of the configuration to delete (e.g., `lobby`).
+</ParamField>
+
+```bash
+curl -X DELETE http://localhost:8080/api/configurations/lobby \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+
+**Response — 204 No Content**
+
+No body is returned on success.
+
+| Status | Meaning |
+|--------|---------|
+| `204` | Configuration deleted. |
+| `401` | Unauthorized. |

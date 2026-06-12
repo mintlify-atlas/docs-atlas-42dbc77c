@@ -1,0 +1,151 @@
+---
+title: "Node Configuration Reference for Universe"
+sidebarTitle: "Node Config"
+description: "Complete reference for config.json — controls node identity, Hazelcast cluster membership, REST API port, Master vs Wrapper role, and resource limits."
+---
+
+Every Universe node reads `./config.json` on startup to determine its identity in the cluster, which address and port to bind Hazelcast on, where the Master lives, and how many resources it may allocate to instances. The same JAR acts as either a **Master** or a **Wrapper** depending on the `isMasterNode` flag; all other fields follow from that role.
+
+<Note>
+  If `config.json` does not exist when you first launch the JAR, Universe creates it automatically alongside the other required directories. Edit the generated file and restart to apply your values.
+</Note>
+
+## First-Run Directory Structure
+
+On first launch Universe initialises the following layout next to the JAR:
+
+```
+./
+├── config.json          ← node identity & cluster settings
+├── database.json        ← database backend settings
+├── configuration/       ← instance configuration files (.json)
+├── templates/           ← template storage (<group>/<name>/)
+├── running/             ← active instance working directories
+└── extensions/          ← extension JARs and their configs
+```
+
+## Full Configuration Example
+
+```json
+{
+  "address": "127.0.0.1",
+  "port": 6000,
+  "apiPort": 7000,
+  "nodeId": "node-1",
+  "clusterName": "universe-cluster",
+  "isMasterNode": true,
+  "masterAddress": "127.0.0.1",
+  "masterPort": 6000,
+  "masterApiPort": 7000,
+  "debug": false,
+  "maxRamMB": 8192,
+  "maxCpu": 400,
+  "bindAddress": "127.0.0.1",
+  "publicAddress": "127.0.0.1",
+  "nodeSpecificVariables": {
+    "region": "us-east-1"
+  }
+}
+```
+
+## Field Reference
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `address` | string | `"127.0.0.1"` | The IP address this node advertises to the cluster. Used as the default for `bindAddress` and `publicAddress`. |
+| `port` | integer | `6000` | Hazelcast member port. |
+| `apiPort` | integer | `7000` | Ktor REST API port (Master only; Wrappers do not expose an API). |
+| `nodeId` | string | `"node-1"` | Unique identifier for this node within the cluster. Appears in instance metadata and console output. |
+| `clusterName` | string | `"universe-cluster"` | Hazelcast cluster group name. All members in the same cluster must share this value. |
+| `isMasterNode` | boolean | `true` | When `true` this node acts as the Master: it hosts the REST API and dispatches tasks. When `false` it is a Wrapper. |
+| `masterAddress` | string | `"127.0.0.1"` | Hostname or IP of the Master node's Hazelcast interface. Wrappers use this to join the cluster. |
+| `masterPort` | integer | `6000` | Hazelcast port of the Master node. |
+| `masterApiPort` | integer | `7000` | REST API port of the Master node (used by plugins and clients to reach the API). |
+| `debug` | boolean | `false` | Enables verbose `DEBUG` logging in the console and raises Logback to `INFO` for framework loggers. |
+| `maxRamMB` | integer | `8192` | Maximum RAM in megabytes this node is allowed to allocate across all running instances. |
+| `maxCpu` | integer | `400` | Maximum CPU units this node may allocate. 100 units equals one physical core. |
+| `bindAddress` | string | `address` | Address Hazelcast binds its server socket to. Set to `"0.0.0.0"` inside Docker to accept connections on all interfaces. |
+| `publicAddress` | string | `address` | Address advertised to other Hazelcast members. Use your Tailscale IP when running behind Docker NAT. |
+| `nodeSpecificVariables` | object | `{"region":"us-east-1"}` | Arbitrary key/value pairs exposed as template variables on this node only. |
+
+## Master vs Wrapper Configuration
+
+<Tabs>
+  <Tab title="Master Node">
+    The Master exposes the REST API, hosts the Hazelcast cluster, and routes deploy/stop tasks to Wrappers. Its `isMasterNode` must be `true` and `masterAddress`/`masterPort` should point back to itself.
+
+    ```json
+    {
+      "address": "10.0.0.1",
+      "port": 6000,
+      "apiPort": 7000,
+      "nodeId": "master-1",
+      "clusterName": "universe-cluster",
+      "isMasterNode": true,
+      "masterAddress": "10.0.0.1",
+      "masterPort": 6000,
+      "masterApiPort": 7000,
+      "debug": false,
+      "maxRamMB": 16384,
+      "maxCpu": 800
+    }
+    ```
+
+    <Tip>
+      When running in Docker, set `bindAddress` to `"0.0.0.0"` so Hazelcast accepts inbound connections from Wrapper containers, and set `publicAddress` to the container's reachable IP or Tailscale address.
+    </Tip>
+  </Tab>
+
+  <Tab title="Wrapper Node">
+    Wrappers receive tasks from the Master via Hazelcast and execute them locally. Set `isMasterNode` to `false` and point `masterAddress`/`masterPort` at the Master. The `apiPort` field is ignored on a Wrapper.
+
+    ```json
+    {
+      "address": "10.0.0.2",
+      "port": 6001,
+      "apiPort": 7001,
+      "nodeId": "wrapper-1",
+      "clusterName": "universe-cluster",
+      "isMasterNode": false,
+      "masterAddress": "10.0.0.1",
+      "masterPort": 6000,
+      "masterApiPort": 7000,
+      "debug": false,
+      "maxRamMB": 8192,
+      "maxCpu": 400
+    }
+    ```
+
+    <Warning>
+      Every Wrapper must use the **same `clusterName`** as the Master or Hazelcast will refuse to admit it to the cluster.
+    </Warning>
+  </Tab>
+
+  <Tab title="Docker Compose">
+    When the Wrapper runs in the same Docker Compose project as the Master, use the Compose service name as `masterAddress`:
+
+    ```json
+    {
+      "isMasterNode": false,
+      "masterAddress": "universe-master",
+      "masterPort": 6000,
+      "masterApiPort": 7000,
+      "bindAddress": "0.0.0.0",
+      "publicAddress": "10.0.0.2"
+    }
+    ```
+
+    Replace `publicAddress` with the Docker bridge IP or Tailscale IP so that Hazelcast members on different networks can route back to the Wrapper.
+  </Tab>
+</Tabs>
+
+## Debug Logging
+
+The `debug` field controls the verbosity of both the user-facing console and the SLF4J/Logback file logger:
+
+| `debug` value | Console output | Logback console | Log file |
+|---------------|----------------|-----------------|----------|
+| `false` | `INFO`+ operational messages | `WARN`+ only | Full detail |
+| `true` | `INFO`+ and `DEBUG` messages | `INFO`+ for all loggers including Hazelcast, Netty | Full detail |
+
+Log files are written to `./logs/universe.log`, rotated daily, and retained for 30 days.

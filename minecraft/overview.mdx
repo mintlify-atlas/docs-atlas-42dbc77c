@@ -1,0 +1,105 @@
+---
+title: "Universe Minecraft Integration: Plugins and API"
+sidebarTitle: "Overview"
+description: "Universe provides first-class Minecraft support for Paper, Spigot, Folia, Velocity, and BungeeCord — auto-registering instances, heartbeating, and exposing a clean plugin API."
+---
+
+Universe ships a dedicated set of Minecraft modules that sit on top of the core orchestrator. Each running Minecraft server registers itself with the Universe Master, reports a live heartbeat, and exposes a consistent `/universe` command surface. Proxy plugins go further by polling the REST API and automatically wiring backend servers into Velocity or BungeeCord — so players are always routed to a live instance the moment they connect.
+
+The integration is split into two concerns: **server plugins** (Paper, Spigot, Folia) that each run inside a game server, and **proxy plugins** (Velocity, BungeeCord) that live at the network edge. Both groups share the `:minecraft:api` module, a JVM-8-compatible library that any dependent plugin can call to interact with the cluster.
+
+## Supported Platforms
+
+| Module | Platform | Target Version | Chat Formatting |
+|---|---|---|---|
+| `minecraft-modern` | Paper | 1.21.11+ | MiniMessage |
+| `minecraft-legacy` | Spigot | 1.8.8 | Legacy `&` codes |
+| `minecraft-folia` | Folia | 1.21+ | MiniMessage |
+| `minecraft-velocity` | Velocity | 3.5.0 | MiniMessage |
+| `minecraft-bungee` | BungeeCord | Latest | Legacy `&` codes |
+
+<CardGroup cols={2}>
+  <Card title="Server Plugins" icon="server" href="/minecraft/plugins">
+    Install Universe on Paper, Spigot, or Folia game servers. Covers heartbeat reporting, config, and `/universe` commands.
+  </Card>
+  <Card title="Proxy Plugins" icon="network-wired" href="/minecraft/proxy-plugins">
+    Velocity and BungeeCord plugins that poll instances from the REST API and auto-connect players on join.
+  </Card>
+  <Card title="Plugin API" icon="code" href="/minecraft/api">
+    The JVM-8-compatible `:minecraft:api` module with `UniverseAPI`, `InstanceManager`, and `CompletableFuture`-based methods.
+  </Card>
+</CardGroup>
+
+## Master URL Resolution
+
+Every plugin — server and proxy alike — needs to know the address of the Universe Master REST API. The URL is resolved in strict priority order:
+
+<Steps>
+  <Step title="JVM System Property">
+    Pass `-Duniverse.master.url=http://my-master:6000` on the JVM command line. This takes highest precedence and overrides everything else.
+  </Step>
+  <Step title="Environment Variable">
+    Set `UNIVERSE_MASTER_URL=http://my-master:6000` in the process environment. Useful for container and Kubernetes deployments without touching config files.
+  </Step>
+  <Step title="config.yml">
+    Set `master-url` inside `plugins/Universe/config.yml`. This is the recommended method for bare-metal or VM deployments.
+
+    ```yaml
+    master-url: "http://localhost:6000"
+    ```
+  </Step>
+  <Step title="Default">
+    Falls back to `http://localhost:6000` when none of the above are present.
+  </Step>
+</Steps>
+
+<Note>
+  The same four-step resolution applies to the instance ID (`universe.instance.id` / `UNIVERSE_INSTANCE_ID` / `instance-id`) and the optional API key (`universe.api.key` / `UNIVERSE_API_KEY` / `api-key`).
+</Note>
+
+## Docker and Kubernetes Networking
+
+When a Minecraft server runs inside a container or pod the loopback address `localhost` cannot reach a Master that lives on the host or in a different container. Always set `UNIVERSE_MASTER_URL` to a container-accessible address:
+
+```bash
+# Docker Compose — server container reaching the host
+-e UNIVERSE_MASTER_URL=http://host.docker.internal:6000
+
+# Kubernetes pod — reaching an external Master
+-e UNIVERSE_MASTER_URL=http://my-game-host.example.com:6000
+
+# Kubernetes pod — reaching an in-cluster Master Service
+-e UNIVERSE_MASTER_URL=http://universe-master-service:6000
+```
+
+<Warning>
+  If `UNIVERSE_MASTER_URL` is left at the default `http://localhost:6000` inside a container, the plugin will silently fail to connect. Always verify reachability before starting the server.
+</Warning>
+
+## Building Minecraft Plugins
+
+All Minecraft modules output shadow JARs to `.built/` alongside the main Universe loader.
+
+```bash
+# Build the shared API module (required by all other modules)
+./gradlew :minecraft:minecraft-api:build
+
+# Build the modern Paper plugin (1.21.11+)
+./gradlew :minecraft:minecraft-modern:build
+
+# Build the legacy Spigot plugin (1.8.8)
+./gradlew :minecraft:minecraft-legacy:build
+
+# Build the Folia plugin (1.21+)
+./gradlew :minecraft:minecraft-folia:build
+
+# Build the Velocity proxy plugin
+./gradlew :minecraft:minecraft-velocity:build
+
+# Build the BungeeCord proxy plugin
+./gradlew :minecraft:minecraft-bungee:build
+```
+
+<Tip>
+  Run `./gradlew build` from the repository root to build every module — including the loader, extensions, and all Minecraft plugins — in one pass.
+</Tip>

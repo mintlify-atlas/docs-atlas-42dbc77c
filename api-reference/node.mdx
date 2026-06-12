@@ -1,0 +1,308 @@
+---
+title: "Node API: Status, Config, and Health Check"
+sidebarTitle: "Node"
+description: "Retrieve local node status and uptime, read the full node configuration, perform health check pings, trigger config reloads, and scrape Prometheus metrics."
+---
+
+The Node API gives you visibility into the specific Universe node you are talking to. It includes a public health check endpoint (no auth required), a detailed node status endpoint, the raw `UniverseMainConfiguration` the node loaded at startup, a (stub) config reload endpoint, and the Prometheus metrics scrape target.
+
+These endpoints operate on the **local** node only. To inspect other nodes in the cluster, use the [Cluster API](/api-reference/cluster).
+
+---
+
+## The UniverseMainConfiguration Object
+
+This schema mirrors `./config.json` on disk and is returned verbatim by `GET /api/node/config`.
+
+<ResponseField name="address" type="string">
+  IP address this node binds Hazelcast to (e.g., `127.0.0.1`).
+</ResponseField>
+
+<ResponseField name="port" type="integer">
+  Hazelcast cluster port (default `6000`).
+</ResponseField>
+
+<ResponseField name="apiPort" type="integer">
+  REST API HTTP port (default `7000` / `8080` in development).
+</ResponseField>
+
+<ResponseField name="nodeId" type="string">
+  Human-readable node identifier (e.g., `node-1`). Shown in `GET /api/ping` and cluster listings.
+</ResponseField>
+
+<ResponseField name="clusterName" type="string">
+  Name of the Hazelcast cluster this node joins (e.g., `universe-cluster`).
+</ResponseField>
+
+<ResponseField name="isMasterNode" type="boolean">
+  `true` if this node is the master. Master nodes expose the REST API and own the console WebSocket. Wrapper nodes only execute instances.
+</ResponseField>
+
+<ResponseField name="masterAddress" type="string">
+  IP address of the master node. Used by wrapper nodes to reach the master's Hazelcast interface.
+</ResponseField>
+
+<ResponseField name="masterPort" type="integer">
+  Hazelcast port of the master node.
+</ResponseField>
+
+<ResponseField name="masterApiPort" type="integer">
+  REST API port of the master node. Wrapper nodes use this to resolve the `%MASTER_API_PORT%` template variable.
+</ResponseField>
+
+<ResponseField name="debug" type="boolean">
+  When `true`, enables verbose DEBUG logging to both the console and log files.
+</ResponseField>
+
+<ResponseField name="maxRamMB" type="integer">
+  Maximum RAM (in MB) this node will accept when scheduling new instances. The scheduler rejects placements that would exceed this limit.
+</ResponseField>
+
+<ResponseField name="maxCpu" type="integer">
+  Maximum CPU units this node will accept. `100` = 1 core.
+</ResponseField>
+
+---
+
+## Endpoints
+
+### GET /api/ping
+
+A lightweight health check that requires **no authentication**. Returns basic identity information about the node. Use this endpoint for load balancer health probes and uptime monitors.
+
+**Authentication:** None required.
+
+```bash
+curl http://localhost:8080/api/ping
+```
+
+**Response — 200 OK**
+
+<ResponseField name="status" type="string">
+  Always `"ok"` when the node is running.
+</ResponseField>
+
+<ResponseField name="nodeId" type="string">
+  The node's human-readable identifier.
+</ResponseField>
+
+<ResponseField name="clusterName" type="string">
+  The Hazelcast cluster this node belongs to.
+</ResponseField>
+
+<ResponseField name="master" type="boolean">
+  Whether this node is the master node.
+</ResponseField>
+
+```json
+{
+  "status": "ok",
+  "nodeId": "node-1",
+  "clusterName": "universe-cluster",
+  "master": true
+}
+```
+
+| Status | Meaning |
+|--------|---------|
+| `200` | Node is running and responsive. |
+
+---
+
+### GET /api/node
+
+Returns detailed runtime information about the local node: identity, version, uptime, and JVM/OS system statistics.
+
+**Authentication:** ALL permission required.
+
+```bash
+curl http://localhost:8080/api/node \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+
+**Response — 200 OK**
+
+<ResponseField name="id" type="string">
+  The node ID from config.
+</ResponseField>
+
+<ResponseField name="clusterName" type="string">
+  The Hazelcast cluster name.
+</ResponseField>
+
+<ResponseField name="version" type="string">
+  Universe version string (e.g., `0.0.1`).
+</ResponseField>
+
+<ResponseField name="master" type="boolean">
+  Whether this is the master node.
+</ResponseField>
+
+<ResponseField name="address" type="string">
+  Hazelcast bind address.
+</ResponseField>
+
+<ResponseField name="port" type="integer">
+  Hazelcast cluster port.
+</ResponseField>
+
+<ResponseField name="apiPort" type="integer">
+  REST API port.
+</ResponseField>
+
+<ResponseField name="uptimeMs" type="integer">
+  JVM uptime in milliseconds since process start.
+</ResponseField>
+
+<ResponseField name="system" type="object">
+  <Expandable title="system fields">
+    <ResponseField name="availableProcessors" type="integer">
+      Number of logical CPU cores available to the JVM.
+    </ResponseField>
+    <ResponseField name="systemLoadAverage" type="number">
+      1-minute system load average from the OS. `-1` if unavailable.
+    </ResponseField>
+    <ResponseField name="freeMemory" type="integer">
+      Bytes of free memory in the JVM heap.
+    </ResponseField>
+    <ResponseField name="totalMemory" type="integer">
+      Bytes of total allocated JVM heap.
+    </ResponseField>
+    <ResponseField name="maxMemory" type="integer">
+      Maximum bytes the JVM heap will ever use (`-Xmx` value).
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+```json
+{
+  "id": "node-1",
+  "clusterName": "universe-cluster",
+  "version": "0.0.1",
+  "master": true,
+  "address": "127.0.0.1",
+  "port": 6000,
+  "apiPort": 8080,
+  "uptimeMs": 345678,
+  "system": {
+    "availableProcessors": 8,
+    "systemLoadAverage": 1.23,
+    "freeMemory": 536870912,
+    "totalMemory": 1073741824,
+    "maxMemory": 4294967296
+  }
+}
+```
+
+| Status | Meaning |
+|--------|---------|
+| `200` | Node info returned. |
+| `401` | Unauthorized. |
+
+---
+
+### GET /api/node/config
+
+Returns the full `UniverseMainConfiguration` that this node loaded at startup. Useful for verifying the active config without SSHing into the node.
+
+**Authentication:** ALL permission required.
+
+```bash
+curl http://localhost:8080/api/node/config \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+
+**Response — 200 OK**
+
+The complete `UniverseMainConfiguration` object (see [schema above](#the-universemainconfiguration-object)).
+
+```json
+{
+  "address": "127.0.0.1",
+  "port": 6000,
+  "apiPort": 8080,
+  "nodeId": "node-1",
+  "clusterName": "universe-cluster",
+  "isMasterNode": true,
+  "masterAddress": "127.0.0.1",
+  "masterPort": 6000,
+  "masterApiPort": 8080,
+  "debug": false,
+  "maxRamMB": 16384,
+  "maxCpu": 800
+}
+```
+
+| Status | Meaning |
+|--------|---------|
+| `200` | Config returned. |
+| `401` | Unauthorized. |
+
+---
+
+### POST /api/node/reload
+
+Triggers a configuration reload from disk. **Not yet implemented** — always returns `501`.
+
+**Authentication:** ALL permission required.
+
+```bash
+curl -X POST http://localhost:8080/api/node/reload \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+
+**Response — 501 Not Implemented**
+
+```json
+{
+  "error": "Configuration reload is not yet implemented"
+}
+```
+
+<Note>
+  Until this endpoint is implemented, reload configurations by restarting the node or using the `config reload` console command, which re-reads all `./configuration/*.json` files from disk.
+</Note>
+
+| Status | Meaning |
+|--------|---------|
+| `501` | Not yet implemented. |
+| `401` | Unauthorized. |
+
+---
+
+### GET /api/metrics
+
+Returns metrics in **Prometheus exposition format** (`text/plain`). This endpoint requires **no authentication** and is designed to be scraped directly by Prometheus or compatible monitoring tools.
+
+Metric collection requires the `metrics-prometheus` extension to be installed in `./extensions/`. If no provider is registered, the endpoint returns `503` with a comment line.
+
+**Authentication:** None required.
+
+```bash
+curl http://localhost:8080/api/metrics
+```
+
+**Response — 200 OK** — Prometheus plain-text format.
+
+```text
+# HELP universe_instances_total Total number of instances
+# TYPE universe_instances_total gauge
+universe_instances_total 5
+
+# HELP universe_instances_online Instances currently in ONLINE state
+# TYPE universe_instances_online gauge
+universe_instances_online 4
+
+# HELP universe_node_used_ram_mb RAM used by instances on this node in MB
+# TYPE universe_node_used_ram_mb gauge
+universe_node_used_ram_mb 8192
+```
+
+| Status | Meaning |
+|--------|---------|
+| `200` | Metrics scraped and returned. |
+| `503` | No metrics provider registered (`metrics-prometheus` extension not loaded). |
+
+<Tip>
+  Point your Prometheus `scrape_configs` at `http://<node-host>:<apiPort>/api/metrics` with a short interval (e.g., `15s`) to get live cluster dashboards.
+</Tip>

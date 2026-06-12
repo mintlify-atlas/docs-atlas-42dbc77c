@@ -1,0 +1,87 @@
+---
+title: "Instance Runtimes: Process, Docker, and Kubernetes"
+sidebarTitle: "Overview"
+description: "Compare screen, tmux, docker, and kube runtimes. Set the runtime field in any instance configuration to switch execution backends on the fly."
+---
+
+A **runtime** is the execution backend responsible for launching instance processes, managing their lifecycle, and routing stdin commands. When Universe creates an instance it delegates to the configured runtime to start the process, track its PID or container ID, pipe commands to stdin, and clean up when the instance is stopped.
+
+Universe ships with two built-in process runtimes (`screen` and `tmux`) and supports two extension-based runtimes (`docker` and `kube`). The active runtime is selected per configuration — different instance configurations on the same node can use different runtimes simultaneously.
+
+## Available Runtimes
+
+| Key | Type | Primary Use Case | Requires Extension |
+|-----|------|------------------|--------------------|
+| `screen` | Process (GNU Screen session) | Local development, bare-metal nodes | No |
+| `tmux` | Process (tmux session) | Local development, bare-metal nodes | No |
+| `docker` | Container (Docker-out-of-Docker) | Containerized deployment, resource isolation | Yes — `runtime-docker` |
+| `kube` | Pod (Kubernetes) | Cloud-native, multi-node, auto-scaling | Yes — `runtime-k8s` |
+
+## Selecting a Runtime
+
+Set the `runtime` field in any instance configuration file under `./configuration/`. The value must match the runtime's key exactly.
+
+```json
+{
+  "name": "default",
+  "runtime": "screen",
+  "command": "java -jar server.jar",
+  "availablePorts": { "min": 25565, "max": 25570 }
+}
+```
+
+To switch to Docker, change one field:
+
+```json
+{
+  "name": "default",
+  "runtime": "docker",
+  "command": "java -jar server.jar",
+  "availablePorts": { "min": 25565, "max": 25570 }
+}
+```
+
+Reload configurations after editing:
+
+```bash
+config reload
+```
+
+Or via the REST API:
+
+```bash
+curl -X POST http://localhost:7000/api/node/reload
+```
+
+<Tip>
+  Use the `screen` runtime for local development — it requires no extension JARs, no Docker socket, and no Kubernetes cluster. Attach to any running session with `screen -r universe-<instanceId>` to inspect output directly.
+</Tip>
+
+## Runtime Cards
+
+<CardGroup cols={2}>
+  <Card title="Screen & Tmux" icon="terminal" href="/runtimes/screen-tmux">
+    Built-in process runtimes. Spawn detached sessions on the local node. No extensions required.
+  </Card>
+  <Card title="Docker" icon="docker" href="/runtimes/docker">
+    Containerized runtime via Docker-out-of-Docker. Requires the `runtime-docker` extension JAR.
+  </Card>
+  <Card title="Kubernetes" icon="cloud" href="/runtimes/kubernetes">
+    Pod-based runtime for local clusters and cloud providers. Requires the `runtime-k8s` extension JAR.
+  </Card>
+  <Card title="Building Extensions" icon="puzzle-piece" href="/extensions/building-extensions">
+    Implement your own `RuntimeProvider` and package it as an extension JAR.
+  </Card>
+</CardGroup>
+
+## Port Allocation
+
+Regardless of which runtime is active, every instance is assigned a unique port before it starts. Universe's `PortAllocator` checks three sources in order to guarantee conflict-free allocation:
+
+1. **Local in-memory allocations** — a `ConcurrentHashSet` of ports already assigned by this JVM instance during its current lifetime. Prevents the same wrapper from double-allocating within a burst of concurrent starts.
+
+2. **Cluster-wide active instances** — queries the Hazelcast `IMap` for all instances in `ONLINE` or `CREATING` state across every node, then skips any port already reported by another instance. This prevents collisions when two wrappers share overlapping `availablePorts` ranges.
+
+3. **OS-level availability** — attempts a `ServerSocket` bind on the candidate port and follows up with a short-timeout TCP connect probe to `localhost:<port>`. If either check indicates something is already listening, the port is skipped. This catches services that were started outside Universe and are not tracked in Hazelcast.
+
+Only after passing all three checks is a port recorded as allocated and returned to the runtime. When the instance stops, `PortAllocator.release()` removes the port from the in-memory set so it can be reused.

@@ -1,0 +1,194 @@
+---
+title: "Docker Runtime: Containerized Instance Execution"
+sidebarTitle: "Docker"
+description: "Run instances as sibling Docker containers using Docker-out-of-Docker. Requires the runtime-docker JAR, a mounted Docker socket, and hostDataPath."
+---
+
+The Docker runtime extension allows Universe to spawn instances as **Docker containers** instead of local processes. Each instance gets its own isolated container with configurable resource limits, networking, and image. Containers are siblings to the Universe container itself — Universe communicates with the host's Docker daemon via the mounted Unix socket, a pattern known as Docker-out-of-Docker.
+
+This runtime is well-suited for containerized deployments where you want process isolation per instance without the complexity of a full Kubernetes cluster. It also enables full log streaming to the REST API and WebSocket live-log endpoint.
+
+## How It Works
+
+Universe's Docker extension uses the Docker Engine API (via the Docker Java client) to create and manage containers. When an instance is created:
+
+1. Universe resolves and copies the template tree to `./running/<instanceId>/` inside the Universe container.
+2. The extension translates the instance configuration into a `CreateContainerCmd`, specifying the image, command, port bindings, volume mounts, and environment variables.
+3. The container is started. Universe polls the Docker API until the container enters `running` state.
+4. `executeCommand()` calls `docker exec` to run a command inside the container.
+5. `stop()` calls `docker stop` with the configured `stopTimeout`, then optionally removes the container (`autoRemove: true`).
+
+Log retrieval (`GET /api/instances/{id}/logs` and the `WS /api/instances/{id}/live-log` WebSocket) streams directly from the Docker container's stdout/stderr via the Docker logs API.
+
+## Setup
+
+<Steps>
+  <Step title="Place the extension JAR">
+    Copy `runtime-docker-<version>.jar` into the `./extensions/` directory on the Universe data volume:
+
+    ```text
+    ./extensions/
+      runtime-docker-0.0.1.jar
+    ```
+
+    Universe scans this directory on startup and loads all extension JARs automatically.
+  </Step>
+
+  <Step title="Mount the Docker socket in docker-compose.yml">
+    The extension needs access to the host Docker daemon. Mount the Unix socket into the Universe container:
+
+    ```yaml
+    services:
+      universe:
+        image: git.lunarlabs.dev/scala/universe:latest
+        volumes:
+          - ./data:/data
+          # REQUIRED: Allow Universe to control Docker on the host
+          - /var/run/docker.sock:/var/run/docker.sock
+        restart: unless-stopped
+        tty: true
+        stdin_open: true
+    ```
+
+    Containers created by the extension will be **siblings** of the Universe container — they appear in `docker ps` on the host alongside Universe itself, not nested inside it.
+  </Step>
+
+  <Step title="Create the extension config file">
+    Create `./extensions/docker/config.json` (inside the Universe data directory) with at minimum a `hostDataPath` value. A full example:
+
+    ```json
+    {
+      "factoryName": "docker",
+      "hostDataPath": "/opt/universe/data",
+      "network": "host",
+      "javaImage": {
+        "repository": "azul-zulu",
+        "tag": "25-jdk-alpine"
+      },
+      "volumes": [],
+      "exposedPorts": [],
+      "autoRemove": true,
+      "stopTimeout": 30
+    }
+    ```
+  </Step>
+
+  <Step title="Set runtime in instance configuration">
+    Edit `./configuration/default.json` and set `"runtime": "docker"`:
+
+    ```json
+    {
+      "name": "default",
+      "runtime": "docker",
+      "command": "java -jar server.jar",
+      "availablePorts": { "min": 25565, "max": 25570 },
+      "minimumServiceCount": 1
+    }
+    ```
+
+    Then reload: `config reload` or `POST /api/node/reload`.
+  </Step>
+</Steps>
+
+## Understanding hostDataPath
+
+`hostDataPath` is the most important field to get right when Universe runs inside Docker.
+
+When Universe is containerized, the template working directories live inside the container's filesystem, for example at `/data/running/<instanceId>/` (because `docker-compose.yml` mounts `./data:/data`). When the Docker extension creates a **new sibling container** and bind-mounts this directory, the Docker daemon resolves the path on the **host filesystem** — not inside the Universe container.
+
+The path `/data/running/abc123` does not exist on the host. The host sees the same data at the path where `./data` lives relative to `docker-compose.yml`.
+
+**Example:** Your `docker-compose.yml` lives at `/opt/universe/docker-compose.yml` and mounts `./data:/data`. Set:
+
+```json
+{
+  "hostDataPath": "/opt/universe/data"
+}
+```
+
+Now when Universe spawns a container and bind-mounts `./running/abc123/`, the Docker daemon receives `/opt/universe/data/running/abc123/` — a path that actually exists on the host — and the spawned container gets the template files.
+
+<Warning>
+  Mounting `/var/run/docker.sock` grants the Universe container **full control over the host's Docker daemon**, including the ability to start, stop, and inspect all containers on the machine. Only use this in trusted, controlled environments. Never expose the Universe REST API to the public internet when the Docker socket is mounted.
+</Warning>
+
+## Full Configuration Schema
+
+All fields in `./extensions/docker/config.json`:
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `factoryName` | string | `"docker"` | Runtime key used in instance configs (`"runtime": "docker"`) |
+| `hostDataPath` | string | `null` | Host filesystem path that maps to the Universe data directory. Required when Universe runs inside Docker |
+| `network` | string | `"host"` | Docker network mode for spawned containers (`"host"`, `"bridge"`, or a named network) |
+| `javaImage.repository` | string | `"azul-zulu"` | Container image repository for instance containers |
+| `javaImage.tag` | string | `"25-jdk-alpine"` | Image tag |
+| `javaImage.registry` | string | `null` | Optional private registry prefix |
+| `javaImage.platform` | string | `null` | Optional platform override (e.g. `"linux/amd64"`) |
+| `volumes` | array | `[]` | Additional bind mounts applied to every instance container |
+| `exposedPorts` | array | `[]` | Additional ports to expose on instance containers |
+| `autoRemove` | boolean | `true` | Automatically remove the container when it exits |
+| `stopTimeout` | int | `30` | Seconds to wait for graceful shutdown before `SIGKILL` |
+| `dockerHost` | string | `"unix:///var/run/docker.sock"` | Docker daemon endpoint |
+| `dockerCertPath` | string | `null` | Path to TLS certificates for TCP Docker connections |
+| `registryUsername` | string | `null` | Private registry credentials |
+| `registryPassword` | string | `null` | Private registry credentials |
+| `registryEmail` | string | `null` | Private registry credentials |
+| `registryUrl` | string | `null` | Private registry URL |
+| `user` | string | `null` | User inside the container (e.g. `"1000:1000"`) |
+| `containerWorkDir` | string | `"/app"` | Working directory inside the container |
+
+### volumes Array Items
+
+Each item in the `volumes` array maps a host path into every instance container:
+
+```json
+{
+  "hostPath": "/host/path/to/shared-data",
+  "containerPath": "/container/mount/point",
+  "readOnly": false
+}
+```
+
+### exposedPorts Array Items
+
+Each item declares a port to expose on the container (in addition to the automatically bound instance port):
+
+```json
+{
+  "containerPort": 8080,
+  "protocol": "tcp"
+}
+```
+
+## Per-Instance Image Override
+
+Override the Docker image for a specific instance by setting the `CUSTOM_IMAGE` environment variable in the configuration's `environmentVariables`. The value is parsed as a full image reference and takes precedence over `javaImage` in the extension config:
+
+```json
+{
+  "name": "custom-server",
+  "runtime": "docker",
+  "command": "java -jar server.jar",
+  "environmentVariables": {
+    "CUSTOM_IMAGE": "myregistry.com/custom-java:21",
+    "UNIVERSE_INSTANCE_ID": "%INSTANCE_ID%"
+  }
+}
+```
+
+The `CUSTOM_IMAGE` field supports the full `registry/org/image:tag` format. When present, the standard `javaImage` config is ignored for that instance.
+
+## Log Retrieval
+
+The Docker runtime supports the full log API surface:
+
+```bash
+# Retrieve last 100 lines
+curl http://localhost:7000/api/instances/<id>/logs?lines=100
+
+# Live log streaming via WebSocket
+wscat -c ws://localhost:7000/api/instances/<id>/live-log
+```
+
+Logs are sourced directly from the Docker container's stdout and stderr streams, providing accurate, real-time output without the hardcopy snapshot limitations of the process runtimes.

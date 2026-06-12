@@ -1,0 +1,113 @@
+---
+title: "Universe REST API Overview and Base URL"
+sidebarTitle: "Overview"
+description: "Ktor-powered REST API for Universe cluster orchestration. Covers base URL, Bearer auth, rate limiting, and every available resource group endpoint."
+---
+
+The Universe REST API is a Ktor-based HTTP interface exposed exclusively on **Master nodes**. It gives you programmatic control over the entire cluster — from deploying and managing instances to syncing templates, querying node health, and streaming live logs over WebSocket. All responses are JSON unless otherwise noted.
+
+## Base URL
+
+The API binds to port `7000` by default (the `apiPort` field in `UniverseMainConfiguration`). Every endpoint lives under the `/api` prefix:
+
+```text
+http://<master-ip>:7000/api
+```
+
+<Note>
+  The REST API is only available on the node configured as `isMasterNode: true`. Worker nodes do not expose the HTTP interface. Point all API clients at the master node's address.
+</Note>
+
+## Authentication
+
+All endpoints except `GET /api/ping` and `GET /api/metrics` require a valid Bearer token in the `Authorization` header. Two permission levels are supported:
+
+| Level | Description | Rate Limit |
+|-------|-------------|------------|
+| `ALL` | Full admin access — instances, configs, templates, commands | Unlimited |
+| `PUBLIC` | Read-only access to public endpoints | 100 req / 60 s |
+
+See the [Authentication guide](/api-reference/authentication) for how to generate keys and pass the token in requests.
+
+## Rate Limiting
+
+Universe uses a **sliding window** rate limiter applied per API key. Keys with `PUBLIC` permission are capped at **100 calls per 60 seconds**. Keys with `ALL` permission bypass the limiter entirely. When the limit is exceeded the API returns `429 Too Many Requests`:
+
+```json
+{
+  "error": "Rate limit exceeded",
+  "message": "100 calls were already made during 1m",
+  "retryAfterMs": 45000
+}
+```
+
+## Endpoint Index
+
+The table below lists every route in the API. Rows marked **WS** are WebSocket upgrade endpoints.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/ping` | Health check — returns node status, no auth required |
+| `GET` | `/node` | System stats and uptime for the current node |
+| `GET` | `/node/config` | Full `UniverseMainConfiguration` for the current node |
+| `POST` | `/node/reload` | Reload node configuration from disk *(not yet implemented)* |
+| `GET` | `/cluster/nodes` | List all Hazelcast cluster members |
+| `GET` | `/cluster/nodes/{id}` | Detailed info and instances for a specific node |
+| `POST` | `/cluster/nodes/{id}/command` | Dispatch a console command to a node |
+| `GET` | `/instances` | List all instances across the cluster |
+| `POST` | `/instances` | Create and deploy a new instance |
+| `GET` | `/instances/{id}` | Get details for a single instance |
+| `DELETE` | `/instances/{id}` | Stop and remove an instance |
+| `PATCH` | `/instances/{id}/lifecycle` | Start, stop, or restart an instance |
+| `PUT` | `/instances/{id}/state` | Update instance state and heartbeat timestamp |
+| `POST` | `/instances/{id}/execute` | Send a command to an instance's stdin |
+| `GET` | `/instances/{id}/logs` | Fetch recent log lines for an instance |
+| **WS** | `/instances/{id}/live-log` | Stream live log output from an instance |
+| `GET` | `/configurations` | List all instance configurations |
+| `GET` | `/configurations/{name}` | Get a single configuration by name |
+| `PUT` | `/configurations/{name}` | Create or update a configuration |
+| `DELETE` | `/configurations/{name}` | Delete a configuration |
+| `GET` | `/templates` | List all templates organised by group |
+| `GET` | `/templates/{group}/{name}` | Get details for a specific template |
+| `GET` | `/templates/{group}/{name}/files` | List files inside a local template directory |
+| `GET` | `/templates/{group}/{name}/files/{path}` | Read the contents of a template file |
+| `PATCH` | `/templates/{group}/{name}/files/{path}` | Edit the contents of a template file |
+| `POST` | `/templates/{group}/{name}/files/{path}` | Create a new file inside a template |
+| `DELETE` | `/templates/{group}/{name}/files/{path}` | Delete a file from a template |
+| `POST` | `/templates/{group}/{name}/export` | Export a local template as a `.zip` |
+| `POST` | `/templates/{group}/{name}/import` | Import a template from a `.zip` |
+| `POST` | `/templates/{group}/{name}/sync` | Sync a template from a remote storage provider |
+| `POST` | `/templates/sync` | Dispatch a cluster-wide template sync via Hazelcast |
+| `POST` | `/commands/execute` | Execute a console command on the master node |
+| **WS** | `/console` | Interactive WebSocket console for the master node |
+| `GET` | `/metrics` | Prometheus metrics scrape endpoint — no auth required |
+
+## Resource Groups
+
+<CardGroup cols={2}>
+  <Card title="Instances" icon="server" href="/api-reference/instances">
+    Create, inspect, stop, and control the lifecycle of running instances across the cluster.
+  </Card>
+  <Card title="Configurations" icon="sliders" href="/api-reference/configurations">
+    Manage instance configurations — the blueprints that define how instances are deployed.
+  </Card>
+  <Card title="Templates" icon="copy" href="/api-reference/templates">
+    Browse, edit, export, import, and sync file templates used during instance provisioning.
+  </Card>
+  <Card title="Cluster" icon="circle-nodes" href="/api-reference/cluster">
+    Inspect cluster membership and dispatch commands to individual nodes via Hazelcast.
+  </Card>
+  <Card title="Node" icon="microchip" href="/api-reference/node">
+    Query system stats, configuration, and reload settings on the current master node.
+  </Card>
+  <Card title="Commands" icon="terminal" href="/api-reference/commands">
+    Execute console commands on the master node and capture their output synchronously.
+  </Card>
+  <Card title="WebSockets" icon="plug" href="/api-reference/websockets">
+    Stream live instance logs or open an interactive console session over WebSocket.
+  </Card>
+</CardGroup>
+
+<Note>
+  WebSocket endpoints (`/instances/{id}/live-log` and `/console`) require the same `Authorization: Bearer TOKEN` header to be included in the HTTP upgrade request. Authentication is validated before the connection is promoted to a WebSocket.
+</Note>

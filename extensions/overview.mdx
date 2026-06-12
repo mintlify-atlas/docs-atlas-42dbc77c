@@ -1,0 +1,124 @@
+---
+title: "Universe Extension System: Pluggable Components"
+sidebarTitle: "Overview"
+description: "Drop JARs into ./extensions/ to add runtimes, storage backends, database providers, metrics exporters, and third-party integrations discovered at startup."
+---
+
+Universe's extension system lets you add capabilities to your cluster without touching the core JAR. Drop a compiled extension JAR into the `./extensions/` directory and it is discovered, injected with Guice dependencies, and loaded automatically on the next startup — no registration file, no service loader configuration needed.
+
+## Extension Categories
+
+<CardGroup cols={2}>
+  <Card title="Storage" icon="database" href="/extensions/storage-s3">
+    Remote template storage backends. The S3 extension stores and retrieves template ZIPs from AWS S3 or any S3-compatible service like MinIO.
+  </Card>
+  <Card title="Runtimes" icon="server" href="https://github.com/universeclouddev/Universe">
+    Custom execution environments for instances. Built-in `screen` and `tmux` runtimes ship with the core JAR; Docker and Kubernetes support is added via extension JARs.
+  </Card>
+  <Card title="Databases" icon="circle-nodes" href="/extensions/databases">
+    Additional persistence backends beyond the built-in H2 and MySQL providers. Extension JARs register PostgreSQL, MongoDB, and Redis as selectable database providers.
+  </Card>
+  <Card title="Metrics" icon="chart-line" href="/extensions/metrics">
+    Export cluster and JVM metrics for observability. Prometheus (pull) and InfluxDB (push) backends are each packaged as a separate extension JAR.
+  </Card>
+  <Card title="DevOps" icon="code-branch" href="/extensions/gitops">
+    GitOps-style configuration management and ArgoCD manifest export. Sync templates from a Git repository or export running state as Kubernetes manifests.
+  </Card>
+  <Card title="Integrations" icon="plug" href="/extensions/discord">
+    Third-party service integrations. The Discord extension exposes a full set of slash commands for monitoring and controlling the cluster from a Discord server.
+  </Card>
+</CardGroup>
+
+## How Extensions Are Loaded
+
+Universe's `ExtensionService` scans every JAR placed in `./extensions/` using a classpath scanner at startup. Any class that implements the `Extension` interface and has a no-argument constructor is instantiated, injected with Guice-managed dependencies, and stored in the extension registry.
+
+<Steps>
+  <Step title="JAR Discovery">
+    `ExtensionService.installExtensions()` calls `LoaderUtils.loadDirectory()` to add all `*.jar` files from `./extensions/` to the runtime classloader.
+  </Step>
+  <Step title="Class Scanning">
+    `ExtensionClassUtils.extensions()` walks every class in the combined classpath, instantiates classes that implement `Extension`, and returns the list.
+  </Step>
+  <Step title="Guice Injection">
+    Each discovered extension is passed through `app.injector.injectMembers(extension)`, making all `@Inject`-annotated fields available before `onLoad()` is called.
+  </Step>
+  <Step title="Lifecycle Start">
+    `ExtensionService.loadExtensions()` iterates the discovered extensions, skips master-only extensions on wrapper nodes, and calls `onLoad()` on each remaining extension.
+  </Step>
+</Steps>
+
+## The Extension Interface
+
+Every extension must implement the `Extension` interface from the `:extensions:extension-api` module:
+
+```kotlin
+interface Extension {
+    fun id(): String
+    fun version(): String
+
+    /**
+     * When true, this extension will only be loaded on master nodes.
+     * On wrapper (non-master) nodes it is silently skipped during ExtensionService.loadExtensions().
+     */
+    fun masterOnly(): Boolean = false
+
+    /**
+     * When false, this extension refuses to be reloaded at runtime.
+     * ExtensionService.reloadExtensions() will skip it and log a warning.
+     */
+    fun reloadable(): Boolean = true
+
+    fun onLoad()
+    fun onUnload()
+    fun onReload()
+}
+```
+
+### `masterOnly()`
+
+Return `true` if the extension only makes sense on the Master node — for example, an extension that serves an HTTP endpoint or manages global cluster state. `ExtensionService` silently skips master-only extensions on Wrapper nodes. The default is `false`, meaning the extension loads on every node.
+
+### `reloadable()`
+
+Return `false` if a live reload would break state invariants (for example, an extension that opens a persistent TCP connection it cannot safely re-establish). When `false`, `extension reload` skips the extension and logs a warning instead of calling `onReload()`. The default is `true`.
+
+## Console Commands
+
+| Command | Description |
+|---------|-------------|
+| `extension list` | Show all installed extensions, their IDs, versions, and load status |
+| `extension reload` | Trigger `onReload()` on every loaded extension that returns `reloadable() = true` |
+| `extension reload <id>` | Reload a single extension by its ID |
+
+Both commands are also accessible via the REST API:
+
+```bash
+curl -X POST http://localhost:7000/api/commands/execute \
+  -H "Content-Type: application/json" \
+  -d '{"command": "extension list"}'
+```
+
+## Built-in Extensions Reference
+
+The following extension JARs ship as part of the Universe repository and are built from source:
+
+| JAR Name | Runtime Key / Provider Key | Purpose |
+|---|---|---|
+| `extension-runtime-docker` | `docker` | Run instances as Docker containers |
+| `extension-runtime-k8s` | `k8s` | Run instances as Kubernetes Pods |
+| `extension-storage-s3` | `s3` (storage) | Store and retrieve templates from S3 / MinIO |
+| `extension-tailscale` | — (variable provider) | Inject Tailscale mesh-network IPs as template variables |
+| `extension-db-postgres` | `postgres` (database) | PostgreSQL database provider |
+| `extension-db-mongodb` | `mongodb` (database) | MongoDB document-store provider |
+| `extension-db-redis` | `redis` (database) | Redis in-memory data store provider |
+| `extension-metrics-prometheus` | `prometheus` (metrics) | Expose `/api/metrics` in Prometheus text format |
+| `extension-metrics-influxdb` | `influxdb` (metrics) | Push metrics to InfluxDB 2.x |
+| `extension-gitops` | — (sync service) | Clone a Git repo and sync templates and configs on a schedule |
+| `extension-argocd` | — (manifest writer) | Write Kubernetes ConfigMaps and Deployments every 60 seconds |
+| `extension-discord` | — (bot) | Discord slash commands for cluster monitoring and control |
+| `extension-example` | — | Minimal reference implementation for custom extensions |
+
+<Note>
+  Built-in extensions are not bundled inside the core `universe-loader` JAR. You must copy the relevant extension JARs from `.built/` into your `./extensions/` directory to activate them.
+</Note>

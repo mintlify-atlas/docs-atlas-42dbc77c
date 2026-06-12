@@ -1,0 +1,160 @@
+---
+title: "Screen and Tmux Runtimes for Local Instance Execution"
+sidebarTitle: "Screen & Tmux"
+description: "Built-in screen and tmux runtimes each spawn a detached session per instance, pipe stdin commands via stuff/send-keys, and need no extension JARs."
+---
+
+Universe ships two process-based runtimes out of the box: `screen` (GNU Screen) and `tmux`. Both are implemented directly in the `app` module — no extension JAR is required. They are ideal for local development, bare-metal nodes, and any environment where you want the lowest possible overhead between Universe and the instance process.
+
+Both runtimes follow the same lifecycle model:
+
+- **Start** — spawn a new detached session named `universe-<instanceId>` and run the instance command inside it.
+- **Execute** — pipe a command string to the session's stdin.
+- **Stop** — terminate the session and clean up cgroup resources.
+- **Recover** — on startup, Universe scans existing sessions to reconcile in-flight instances.
+
+## How the Screen Runtime Works
+
+`ScreenRuntimeProvider` creates one **GNU Screen** session per instance. The session name is always `universe-<instanceId>`, which makes it easy to identify and attach to sessions manually.
+
+When `start()` is called:
+
+1. Any stale session with the same name is quit silently first (`screen -S <name> -X quit`), ensuring a clean slate.
+2. Universe builds a shell command: `cd <workingDir> && <resourcePrefix><command>` and launches it inside a new detached session via `screen -dmS <name> bash -c <shellCommand>`.
+3. Environment variables from the instance configuration are injected via `ProcessBuilder.environment()`.
+4. If cgroup v2 is available, the session's PID is moved into a dedicated cgroup for memory and CPU enforcement.
+
+When `executeCommand()` is called, Universe sends the command to the session's stdin with a trailing newline using `screen -S <name> -X stuff "<command>\n"`.
+
+When `stop()` is called, Universe issues `screen -S <name> -X quit` to terminate the session and calls `CgroupResourceEnforcer.cleanupCgroup()`.
+
+Log capture uses `screen -X hardcopy <tempfile>` to dump the current screen buffer to a temporary file, which is then read and returned.
+
+## How the Tmux Runtime Works
+
+`TmuxRuntimeProvider` follows the same structure but uses **tmux** primitives. The session name format is identical (`universe-<instanceId>`).
+
+When `start()` is called:
+
+1. Any stale session is killed first (`tmux kill-session -t <name>`).
+2. A new detached session is created via `tmux new-session -d -s <name> -c <workingDir> <command>`, which sets the working directory natively without a shell wrapper.
+3. Environment variables and cgroup setup work identically to the screen runtime.
+
+When `executeCommand()` is called, Universe uses `tmux send-keys -t <name> <command> Enter` to simulate a keypress in the session.
+
+When `stop()` is called, `tmux kill-session -t <name>` terminates the session.
+
+Log capture uses `tmux capture-pane -p -t <name> -S -<lines>` to retrieve the last N lines from the pane's scrollback buffer.
+
+## Configuration
+
+Set `runtime` to `"screen"` or `"tmux"` in any instance configuration file under `./configuration/`:
+
+<Tabs>
+  <Tab title="Screen">
+    ```json
+    {
+      "name": "default",
+      "runtime": "screen",
+      "command": "java -jar server.jar",
+      "availablePorts": { "min": 25565, "max": 25570 },
+      "minimumServiceCount": 1
+    }
+    ```
+  </Tab>
+  <Tab title="Tmux">
+    ```json
+    {
+      "name": "default",
+      "runtime": "tmux",
+      "command": "java -jar server.jar",
+      "availablePorts": { "min": 25565, "max": 25570 },
+      "minimumServiceCount": 1
+    }
+    ```
+  </Tab>
+</Tabs>
+
+No additional fields are required for process runtimes. All standard instance configuration fields (`ramMB`, `environmentVariables`, `templateInstallationConfig`, etc.) are respected.
+
+## Prerequisites
+
+<Steps>
+  <Step title="Install screen or tmux on the node">
+    The corresponding multiplexer must be installed and on `$PATH` for the Universe process.
+
+    ```bash
+    # Debian / Ubuntu
+    sudo apt-get install screen tmux
+
+    # RHEL / CentOS / Fedora
+    sudo dnf install screen tmux
+
+    # Alpine
+    apk add screen tmux
+    ```
+  </Step>
+  <Step title="Verify availability">
+    ```bash
+    screen --version
+    tmux -V
+    ```
+  </Step>
+  <Step title="Set runtime in instance configuration">
+    Edit `./configuration/default.json` and set `"runtime": "screen"` or `"runtime": "tmux"`, then run `config reload` or restart Universe.
+  </Step>
+</Steps>
+
+## Working Directory
+
+Each instance runs from `./running/<instanceId>/` on the node's filesystem. Universe copies the resolved template tree into this directory before handing control to the runtime. For the `screen` runtime, the shell wrapper uses `cd <workingDir>` to enter this directory before executing the command. For `tmux`, the working directory is passed directly via the `-c` flag to `tmux new-session`.
+
+Template variable substitution (e.g., `%PORT%`, `%INSTANCE_ID%`) is performed on files listed in `fileModifications` before the runtime starts, so the instance's configuration files are already patched when the process launches.
+
+## executeCommand() Behavior
+
+Both runtimes implement `executeCommand(instanceId, command)` by writing to the session's stdin — no network socket or RPC is involved:
+
+| Runtime | Mechanism |
+|---------|-----------|
+| `screen` | `screen -S universe-<id> -X stuff "<command>\n"` |
+| `tmux` | `tmux send-keys -t universe-<id> "<command>" Enter` |
+
+Commands sent this way appear exactly as if typed by a human at the terminal. The instance process reads them from stdin as it normally would.
+
+Via the REST API:
+
+```bash
+curl -X POST http://localhost:7000/api/instances/<id>/execute \
+  -H "Content-Type: application/json" \
+  -d '{"command": "say Hello from Universe"}'
+```
+
+## stop() Behavior
+
+Stopping an instance terminates the entire screen or tmux session:
+
+| Runtime | Stop Command |
+|---------|--------------|
+| `screen` | `screen -S universe-<id> -X quit` |
+| `tmux` | `tmux kill-session -t universe-<id>` |
+
+The session's process tree is killed by the multiplexer. Any cgroup created for the instance is cleaned up immediately after.
+
+<Tip>
+  Attach to a running session at any time for direct debugging access without going through the REST API:
+
+  ```bash
+  # Screen — detach with Ctrl-A D
+  screen -r universe-<instanceId>
+
+  # Tmux — detach with Ctrl-B D
+  tmux attach -t universe-<instanceId>
+  ```
+
+  Replace `<instanceId>` with the 6-character ID shown in `instance list`.
+</Tip>
+
+<Note>
+  Neither the `screen` nor the `tmux` runtime supports streaming logs to the REST API via WebSocket (`GET /api/instances/{id}/live-log`). The `getLogs()` implementation captures a snapshot of the current screen buffer, not a continuous stream. Use the Docker or Kubernetes runtime if your workflow depends on live log tailing through the API.
+</Note>

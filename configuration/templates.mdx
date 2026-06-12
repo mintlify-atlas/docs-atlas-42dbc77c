@@ -1,0 +1,191 @@
+---
+title: "Template System: File Trees and Variable Replacement"
+sidebarTitle: "Templates"
+description: "How Universe copies template file trees into running instance directories, resolves TemplateInstallationConfig selectors, and substitutes built-in and custom variables."
+---
+
+Templates are directories of files that Universe copies into a fresh instance working directory before launching the process. They live under `./templates/<group>/<name>/` and can contain anything the runtime needs — configuration files, plugins, scripts, or data. At copy time, Universe replaces placeholder tokens in files listed under `fileModifications` with real runtime values, making templates reusable across nodes, ports, and configurations without manual editing.
+
+## Directory Structure
+
+```
+templates/
+  global/
+    server/
+      server.properties
+      plugins/
+  lobby/
+    default/
+      server.properties
+      world/
+```
+
+Each sub-directory directly inside a group folder is treated as a named template. The path `templates/global/server/` is the template with **group** `global` and **name** `server`.
+
+## Template Installation Lifecycle
+
+<Steps>
+  <Step title="Resolve templates">
+    Universe reads the `templateInstallationConfig` from the instance's configuration file and builds a list of `Template` objects to install using the four selector fields (`allOf`, `allInGroups`, `oneOf`, `oneInGroups`).
+  </Step>
+
+  <Step title="Sort by priority">
+    The resolved list is sorted according to `onTemplatePasteOverridePresentFiles`:
+
+    - **`false` (default)**: sorted by **descending** priority — highest-priority templates are copied first and their files are never overwritten by later, lower-priority templates.
+    - **`true`**: sorted by **ascending** priority — lower-priority templates are copied first, then higher-priority templates are applied last and **overwrite** any existing files.
+  </Step>
+
+  <Step title="Copy files">
+    Each template's directory is recursively copied to `./running/<instance-id>/`. Remote templates (e.g. S3-backed) are extracted directly into that folder.
+  </Step>
+
+  <Step title="Replace variables">
+    Universe reads every file listed in `Configuration.fileModifications`, substitutes all known placeholder tokens with their runtime values, and writes the files back.
+  </Step>
+</Steps>
+
+<Note>
+  Priority ordering: **a lower number means the template is applied earlier** when `onTemplatePasteOverridePresentFiles` is `false` (the default). With the flag set to `true`, lower-numbered templates are applied first and will be overwritten by higher-priority ones applied later.
+</Note>
+
+## TemplateInstallationConfig Fields
+
+<Accordion title="allOf — install every listed template">
+  An explicit list of templates to install unconditionally. Every entry is installed on every instance of this configuration.
+
+  ```json
+  "allOf": [
+    { "name": "base",    "group": "server", "storage": "local", "priority": 0 },
+    { "name": "plugins", "group": "server", "storage": "local", "priority": 1 }
+  ]
+  ```
+
+  Each entry must supply `name`, `group`, `storage` (`"local"` or a registered storage provider key), and `priority`.
+</Accordion>
+
+<Accordion title="allInGroups — install all templates in a group">
+  A list of group names. Every template discovered under each group — both from the local `./templates/` filesystem and from registered remote storage providers — is installed.
+
+  ```json
+  "allInGroups": ["global"]
+  ```
+
+  Templates discovered this way are assigned `priority: 0` automatically.
+</Accordion>
+
+<Accordion title="oneOf — install one template from a list">
+  Exactly one template is selected at random from the provided list and installed. Useful for A/B map rotation or randomised configuration variants.
+
+  ```json
+  "oneOf": [
+    { "name": "map-a", "group": "lobby", "storage": "local", "priority": 0 },
+    { "name": "map-b", "group": "lobby", "storage": "local", "priority": 0 }
+  ]
+  ```
+</Accordion>
+
+<Accordion title="oneInGroups — install one template per group">
+  For each named group, one template is selected at random from all available candidates (local + remote storage) and installed.
+
+  ```json
+  "oneInGroups": ["maps"]
+  ```
+</Accordion>
+
+<Accordion title="onTemplatePasteOverridePresentFiles — copy-order behaviour">
+  Controls whether higher-priority templates win by being applied first (preserved) or last (overwrite).
+
+  | Value | Paste order | Winner on conflict |
+  |-------|-------------|-------------------|
+  | `false` (default) | Higher priority → copied first | Higher-priority files are **preserved** |
+  | `true` | Lower priority → copied first | Higher-priority files **overwrite** lower-priority files |
+
+  Set to `true` when you want a "base" template to lay down defaults and a specialised template to override specific files on top.
+</Accordion>
+
+## Built-In Template Variables
+
+The following placeholders are replaced in every file listed in `fileModifications`:
+
+| Variable | Resolved value |
+|----------|---------------|
+| `%PORT%` | Port allocated to this instance by `PortAllocator`. |
+| `%INSTANCE_ID%` | 6-character unique instance identifier. |
+| `%MASTER_IP%` | Master node IP address (alias for `%MASTER_ADDRESS%`). |
+| `%MASTER_ADDRESS%` | Master node address from `config.json`. |
+| `%MASTER_PORT%` | Master Hazelcast port. |
+| `%MASTER_API_PORT%` | Master REST API port. |
+| `%NODE_ID%` | `nodeId` of the Wrapper executing this instance. |
+| `%HOST_ADDRESS%` | `hostAddress` from the instance configuration (or runtime override). |
+| `%CONFIGURATION_NAME%` | `name` field of the instance configuration. |
+
+These variables are also available in `environmentVariables` values so they are injected into the process environment as real values at launch time.
+
+## Extension-Provided Variables
+
+Additional variables are contributed by runtime and networking extensions:
+
+<CardGroup cols={2}>
+  <Card title="Kubernetes Runtime" icon="cloud">
+    Provided by `runtime-k8s`:
+
+    | Variable | Value |
+    |----------|-------|
+    | `%NAMESPACE%` | Kubernetes namespace the pod runs in. |
+    | `%SERVICE_DNS%` | In-cluster DNS name for the headless service. |
+    | `%POD_NAME%` | Name of the pod created for this instance. |
+  </Card>
+
+  <Card title="Tailscale Mesh" icon="network-wired">
+    Provided by the `tailscale` extension:
+
+    | Variable | Value |
+    |----------|-------|
+    | `%TAILSCALE_IP%` | Tailscale mesh-network IP of the node. |
+    | `%TAILSCALE_MAGIC_DNS%` | MagicDNS hostname for the node. |
+    | `%TAILSCALE_HOSTNAME%` | Tailscale device hostname. |
+  </Card>
+</CardGroup>
+
+<Tip>
+  Set `hostAddress` to `"%TAILSCALE_IP%"` in your instance configuration to have instances advertise their Tailscale IP to connecting clients, enabling encrypted mesh-network connectivity across nodes on different networks.
+</Tip>
+
+## Custom Variables via `Configuration.properties`
+
+The `properties` map in an instance configuration file lets you define arbitrary variables available in all `fileModifications` files:
+
+```json
+"properties": {
+  "SERVER_MOTD": "A Universe-managed server",
+  "LOBBY_IP":    "lobby.example.com"
+}
+```
+
+Each key `myKey` becomes the placeholder `%myKey%`. In the example above, any occurrence of `%SERVER_MOTD%` in a file listed under `fileModifications` will be replaced with `A Universe-managed server`.
+
+## Template Sync Between Nodes
+
+Templates stored locally on one node can be pushed to other nodes in the cluster using the `template sync` console command or the REST API:
+
+```bash
+# Sync a single template
+template sync server/base node-2
+
+# Sync every template in a group
+template sync server/* node-2
+
+# Sync all templates
+template sync * node-2
+```
+
+The same operation is available via REST:
+
+```bash
+POST /api/templates/sync
+```
+
+<Note>
+  Template sync transfers the file tree over Hazelcast. Make sure the target node's `./templates/` directory is writable and that both nodes share the same `clusterName` in their `config.json`.
+</Note>

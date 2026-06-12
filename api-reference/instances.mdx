@@ -1,0 +1,443 @@
+---
+title: "Instance API: Deploy, Control, and Monitor Instances"
+sidebarTitle: "Instances"
+description: "CRUD and lifecycle endpoints for Universe instances — create, inspect, stop, restart, execute stdin commands, and stream logs in real time."
+---
+
+The Instance API is the core of Universe's orchestration surface. Every running workload is an **instance** — a copy of a configuration deployed onto a cluster node by the `InstanceCreationService`. These endpoints let you list all instances across the entire cluster, deploy new ones, drive their lifecycle, push commands into their stdin, and pull logs out.
+
+All instance endpoints require a Bearer token with **ALL** permission. Rate-limited PUBLIC keys cannot access these routes.
+
+<Note>
+  Instance IDs are **6-character alphanumeric strings** (e.g., `a1b2c3`) assigned at creation time. Always use the exact ID returned from `POST /api/instances` or `GET /api/instances`.
+</Note>
+
+---
+
+## The InstanceInfo Object
+
+Every endpoint that returns instance data uses the `InstanceInfo` schema.
+
+<ResponseField name="id" type="string" required>
+  Unique 6-character alphanumeric instance identifier assigned at creation (e.g., `a1b2c3`).
+</ResponseField>
+
+<ResponseField name="configurationName" type="string" required>
+  Name of the `Configuration` used to deploy this instance (e.g., `lobby`).
+</ResponseField>
+
+<ResponseField name="wrapperNodeId" type="string" required>
+  UUID of the Hazelcast cluster member (wrapper node) that is running this instance.
+</ResponseField>
+
+<ResponseField name="hostAddress" type="string" required>
+  Host address clients should use to connect to this instance (e.g., `127.0.0.1`).
+</ResponseField>
+
+<ResponseField name="allocatedPort" type="integer" required>
+  Port number assigned to this instance from the configuration's `availablePorts` range.
+</ResponseField>
+
+<ResponseField name="state" type="InstanceState enum" required>
+  Current lifecycle state of the instance. See [InstanceState values](#instancestate-enum) below.
+</ResponseField>
+
+<ResponseField name="lastHeartbeat" type="integer (int64)" required>
+  Unix epoch milliseconds of the last recorded heartbeat. Used to detect `OFFLINE` instances.
+</ResponseField>
+
+<ResponseField name="processPid" type="integer (int64) | null">
+  Operating-system process ID. `null` for container-based runtimes (Docker, Kubernetes) where there is no local PID.
+</ResponseField>
+
+<ResponseField name="allocatedRamMB" type="integer" required>
+  RAM in megabytes allocated to this instance, taken from the configuration's `ramMB` field.
+</ResponseField>
+
+<ResponseField name="allocatedCpu" type="integer" required>
+  CPU units allocated to this instance. `100` equals one full core.
+</ResponseField>
+
+<ResponseField name="runtime" type="string" required>
+  Key of the runtime provider used when this instance was started (e.g., `screen`, `docker`, `k8s`).
+</ResponseField>
+
+---
+
+## InstanceState Enum
+
+<Accordion title="InstanceState values">
+
+| Value | Description |
+|-------|-------------|
+| `CREATING` | The instance is being deployed — template installation and process startup are in progress. |
+| `ONLINE` | The instance is running and sending heartbeats normally. |
+| `OFFLINE` | The instance has stopped sending heartbeats and is presumed unreachable. |
+| `STOPPED` | The instance has been explicitly stopped and is no longer running. |
+
+</Accordion>
+
+---
+
+## Endpoints
+
+### GET /api/instances
+
+Returns every instance that exists in the Hazelcast cluster state — including stopped and offline ones.
+
+**Authentication:** ALL permission required.
+
+```bash
+curl http://localhost:8080/api/instances \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+
+**Response — 200 OK**
+
+An array of `InstanceInfo` objects.
+
+```json
+[
+  {
+    "id": "a1b2c3",
+    "configurationName": "lobby",
+    "wrapperNodeId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+    "hostAddress": "127.0.0.1",
+    "allocatedPort": 25565,
+    "state": "ONLINE",
+    "lastHeartbeat": 1718000000000,
+    "processPid": 12345,
+    "allocatedRamMB": 2048,
+    "allocatedCpu": 100,
+    "runtime": "screen"
+  }
+]
+```
+
+| Status | Meaning |
+|--------|---------|
+| `200` | Success, array returned (may be empty). |
+| `401` | Missing or invalid `Authorization` header. |
+
+---
+
+### POST /api/instances
+
+Deploys a new instance by looking up the named `Configuration`, selecting an eligible node with sufficient resources, copying templates, replacing variables, and starting the process.
+
+**Authentication:** ALL permission required.
+
+**Request Body**
+
+<ParamField body="configurationName" type="string" required>
+  Name of an existing `Configuration` to deploy (e.g., `lobby`). Returns `400` if the configuration does not exist, or `503` if no node has enough resources.
+</ParamField>
+
+```bash
+curl -X POST http://localhost:8080/api/instances \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"configurationName": "lobby"}'
+```
+
+**Response — 201 Created**
+
+The newly created `InstanceInfo` object.
+
+```json
+{
+  "id": "d4e5f6",
+  "configurationName": "lobby",
+  "wrapperNodeId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+  "hostAddress": "127.0.0.1",
+  "allocatedPort": 25566,
+  "state": "CREATING",
+  "lastHeartbeat": 1718000001000,
+  "processPid": null,
+  "allocatedRamMB": 2048,
+  "allocatedCpu": 100,
+  "runtime": "screen"
+}
+```
+
+| Status | Meaning |
+|--------|---------|
+| `201` | Instance created and deploying. |
+| `400` | `configurationName` does not match any stored configuration. |
+| `503` | No cluster node has enough free RAM or CPU for this configuration. |
+| `401` | Unauthorized. |
+
+---
+
+### GET /api/instances/{id}
+
+Returns the current details of a single instance by its 6-character ID.
+
+**Authentication:** ALL permission required.
+
+**Path Parameters**
+
+<ParamField path="id" type="string" required>
+  The 6-character instance ID (e.g., `a1b2c3`). Must be exactly 6 characters.
+</ParamField>
+
+```bash
+curl http://localhost:8080/api/instances/a1b2c3 \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+
+**Response — 200 OK**
+
+A single `InstanceInfo` object.
+
+| Status | Meaning |
+|--------|---------|
+| `200` | Instance found and returned. |
+| `404` | No instance with this ID exists. |
+| `401` | Unauthorized. |
+
+---
+
+### DELETE /api/instances/{id}
+
+Stops the instance by dispatching a `StopInstanceTask` to its wrapper node via Hazelcast, then marks its state as `STOPPED` in the cluster map. The running directory is cleaned up on the wrapper.
+
+**Authentication:** ALL permission required.
+
+**Path Parameters**
+
+<ParamField path="id" type="string" required>
+  The 6-character instance ID to stop and remove.
+</ParamField>
+
+```bash
+curl -X DELETE http://localhost:8080/api/instances/a1b2c3 \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+
+**Response — 200 OK**
+
+```json
+{
+  "message": "Instance a1b2c3 stopped"
+}
+```
+
+| Status | Meaning |
+|--------|---------|
+| `200` | Stop task dispatched and state updated. |
+| `404` | Instance not found. |
+| `401` | Unauthorized. |
+
+---
+
+### PATCH /api/instances/{id}/lifecycle
+
+Controls the lifecycle of an instance. The `target` query parameter determines the action. For `start` and `restart`, a new instance is created from the same configuration; the old instance ID is retired.
+
+**Authentication:** ALL permission required.
+
+**Path Parameters**
+
+<ParamField path="id" type="string" required>
+  The 6-character instance ID.
+</ParamField>
+
+**Query Parameters**
+
+<ParamField query="target" type="string" required>
+  Lifecycle action. Must be one of: `start`, `stop`, `restart`.
+
+  - **`start`** — Deploys a fresh instance from the same configuration.
+  - **`stop`** — Stops the instance gracefully.
+  - **`restart`** — Stops the instance, then immediately deploys a new one.
+</ParamField>
+
+<Tabs>
+  <Tab title="Start">
+    ```bash
+    curl -X PATCH "http://localhost:8080/api/instances/a1b2c3/lifecycle?target=start" \
+      -H "Authorization: Bearer YOUR_API_KEY"
+    ```
+  </Tab>
+  <Tab title="Stop">
+    ```bash
+    curl -X PATCH "http://localhost:8080/api/instances/a1b2c3/lifecycle?target=stop" \
+      -H "Authorization: Bearer YOUR_API_KEY"
+    ```
+  </Tab>
+  <Tab title="Restart">
+    ```bash
+    curl -X PATCH "http://localhost:8080/api/instances/a1b2c3/lifecycle?target=restart" \
+      -H "Authorization: Bearer YOUR_API_KEY"
+    ```
+  </Tab>
+</Tabs>
+
+**Response — 200 OK**
+
+```json
+{
+  "message": "Instance restarted",
+  "instance": { "...": "InstanceInfo" }
+}
+```
+
+| Status | Meaning |
+|--------|---------|
+| `200` | Action completed. |
+| `400` | Invalid `target` value, missing configuration, or instance not found. |
+| `503` | No node has enough resources (for `start`/`restart`). |
+| `401` | Unauthorized. |
+
+---
+
+### PUT /api/instances/{id}/state
+
+Directly updates the `state` field and optionally the `lastHeartbeat` timestamp of an existing instance in the cluster map. This is typically used by wrapper nodes or monitoring agents reporting heartbeats.
+
+**Authentication:** ALL permission required.
+
+**Path Parameters**
+
+<ParamField path="id" type="string" required>
+  The 6-character instance ID.
+</ParamField>
+
+**Request Body**
+
+<ParamField body="state" type="string" required>
+  New state value. Must be one of: `CREATING`, `ONLINE`, `OFFLINE`, `STOPPED`.
+</ParamField>
+
+<ParamField body="lastHeartbeat" type="integer (int64)">
+  Unix epoch millisecond timestamp. If omitted, defaults to `System.currentTimeMillis()` at the time of the request.
+</ParamField>
+
+```bash
+curl -X PUT http://localhost:8080/api/instances/a1b2c3/state \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"state": "ONLINE", "lastHeartbeat": 1718000005000}'
+```
+
+**Response — 200 OK**
+
+The updated `InstanceInfo` object reflecting the new state.
+
+| Status | Meaning |
+|--------|---------|
+| `200` | State updated. |
+| `400` | Invalid state string or missing instance ID. |
+| `404` | Instance not found. |
+| `401` | Unauthorized. |
+
+---
+
+### POST /api/instances/{id}/execute
+
+Pipes a command string into the running instance's stdin. This is equivalent to typing a command into a Minecraft server console — it has no structured output; the result appears in the instance's logs.
+
+**Authentication:** ALL permission required.
+
+**Path Parameters**
+
+<ParamField path="id" type="string" required>
+  The 6-character instance ID.
+</ParamField>
+
+**Request Body**
+
+<ParamField body="command" type="string" required>
+  The raw command string to write to the process stdin (e.g., `op andyreckt`, `say Hello world`).
+</ParamField>
+
+```bash
+curl -X POST http://localhost:8080/api/instances/a1b2c3/execute \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"command": "op andyreckt"}'
+```
+
+**Response — 200 OK**
+
+```json
+{
+  "message": "Command sent to a1b2c3"
+}
+```
+
+<Tip>
+  To capture the output of a command instead of firing it into stdin, use the [Commands API](/api-reference/commands) `POST /api/commands/execute` endpoint, which captures and returns console output.
+</Tip>
+
+| Status | Meaning |
+|--------|---------|
+| `200` | Command dispatched to instance stdin. |
+| `404` | Instance not found. |
+| `401` | Unauthorized. |
+
+---
+
+### GET /api/instances/{id}/logs
+
+Fetches the most recent log lines from the running instance. Works across all runtime providers: screen, tmux, Docker, and Kubernetes.
+
+**Authentication:** ALL permission required.
+
+**Path Parameters**
+
+<ParamField path="id" type="string" required>
+  The 6-character instance ID.
+</ParamField>
+
+**Query Parameters**
+
+<ParamField query="lines" type="integer">
+  Number of recent log lines to return. Defaults to `100`. Minimum `1`, maximum `1000`.
+</ParamField>
+
+```bash
+curl "http://localhost:8080/api/instances/a1b2c3/logs?lines=50" \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+
+**Response — 200 OK**
+
+<ResponseField name="instanceId" type="string">
+  The requested instance ID.
+</ResponseField>
+
+<ResponseField name="lines" type="string[]">
+  Array of log line strings in chronological order.
+</ResponseField>
+
+<ResponseField name="totalLines" type="integer">
+  Total number of lines returned.
+</ResponseField>
+
+<ResponseField name="requestedLines" type="integer">
+  The value of the `lines` query parameter that was used.
+</ResponseField>
+
+```json
+{
+  "instanceId": "a1b2c3",
+  "lines": [
+    "[12:00:01] [Server thread/INFO]: Done (1.234s)! For help, type \"help\"",
+    "[12:00:02] [Server thread/INFO]: Player andyreckt joined the game"
+  ],
+  "totalLines": 2,
+  "requestedLines": 50
+}
+```
+
+| Status | Meaning |
+|--------|---------|
+| `200` | Logs returned. |
+| `404` | Instance not found, or no logs available yet. |
+| `401` | Unauthorized. |
+
+<Note>
+  For real-time log streaming without polling, use the [WebSocket live-log endpoint](/api-reference/websockets) at `WS /api/instances/{id}/live-log`.
+</Note>

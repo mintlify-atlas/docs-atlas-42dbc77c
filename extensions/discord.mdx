@@ -1,0 +1,101 @@
+---
+title: "Discord Bot Extension: Manage Universe from Discord"
+sidebarTitle: "Discord"
+description: "A Discord bot that adds slash commands for cluster monitoring, instance lifecycle control, and stdin execution, with optional role-based access control."
+---
+
+The Discord extension connects a JDA-powered bot to your Discord server and registers a set of slash commands for interacting with your Universe cluster. You can view cluster status, list instances and configurations, start and stop instances, and pipe commands to running instance stdin — all from Discord, with optional role-based access control to restrict commands to trusted members.
+
+## Features
+
+- **Cluster overview** — Active instance count and configuration count at a glance
+- **Instance listing** — All active instances with state, address, and runtime
+- **Configuration listing** — All configurations with their properties
+- **Instance details** — Full detail view for a specific instance by ID
+- **Instance lifecycle** — Start new instances and stop existing ones
+- **Stdin execution** — Send a command directly to a running instance's stdin
+- **Role-based access control** — Restrict all commands to specific Discord role IDs
+
+## Setup
+
+<Steps>
+  <Step title="Create a Discord Bot">
+    1. Go to the [Discord Developer Portal](https://discord.com/developers/applications)
+    2. Create a new application and navigate to **Bot → Add Bot**
+    3. Copy the bot token — you will need it for the config file
+    4. Navigate to **OAuth2 → URL Generator** and select these scopes and permissions:
+       - **Scopes**: `bot`, `applications.commands`
+       - **Bot Permissions**: `Send Messages`, `Embed Links`, `Use Application Commands`, `Read Message History`
+    5. Use the generated URL to invite the bot to your server
+  </Step>
+  <Step title="Configure the Extension">
+    Create `./extensions/discord/config.json` with your bot token and server ID:
+
+    ```json
+    {
+      "token": "YOUR_BOT_TOKEN_HERE",
+      "guildId": "123456789012345678",
+      "statusChannelId": "",
+      "logChannelId": "",
+      "embedColor": 5814783,
+      "allowedRoleIds": ["123456789012345678"],
+      "intents": ["MESSAGE_CONTENT", "GUILD_MESSAGES", "GUILD_MEMBERS"]
+    }
+    ```
+  </Step>
+  <Step title="Place the Extension JAR">
+    Copy `extension-discord.jar` into `./extensions/`. The extension is loaded automatically on next startup.
+  </Step>
+  <Step title="Restart Universe">
+    Start or restart Universe. The bot will authenticate with Discord, register slash commands for your guild, and log a success message to the console.
+  </Step>
+</Steps>
+
+## Configuration Reference
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `token` | string | **Yes** | Discord bot token from the Developer Portal |
+| `guildId` | string | No | Your Discord server (guild) ID. Used to scope slash command registration to a single server for instant availability |
+| `statusChannelId` | string | No | Channel ID to post status update messages |
+| `logChannelId` | string | No | Channel ID to mirror Universe console log output |
+| `embedColor` | integer | No | Embed accent colour as a decimal integer. Default: `5814783` (a blue-purple) |
+| `allowedRoleIds` | array | No | List of Discord role IDs whose members can use bot commands. Empty array means all users can use commands |
+| `intents` | array | No | Gateway intents to enable. The defaults (`MESSAGE_CONTENT`, `GUILD_MESSAGES`, `GUILD_MEMBERS`) are required for the bot to function correctly |
+
+## Available Commands
+
+| Command | Arguments | Description |
+|---------|-----------|-------------|
+| `/status` | — | Show cluster overview: active instance count and configuration count |
+| `/instances` | — | List all active instances with state, address, and runtime type |
+| `/configurations` | — | List all configurations |
+| `/instance` | `id` | Get detailed information for a specific instance by its ID |
+| `/start` | `configuration` | Request a new instance to be started from the named configuration |
+| `/stop` | `id` | Request an instance to be stopped by ID |
+| `/execute` | `id`, `command` | Send a command string to a running instance's stdin |
+
+## Role-Based Access Control
+
+Set `allowedRoleIds` in the config to restrict command access to specific Discord roles. Only users who have at least one of the listed roles can invoke bot commands. Users without a matching role receive an ephemeral error message.
+
+**Finding a role ID:**
+
+1. Open Discord **Settings → Advanced** and enable **Developer Mode**
+2. Right-click any role in your server's role list → **Copy Role ID**
+3. Paste the ID as a string in the `allowedRoleIds` array
+
+```json
+{
+  "allowedRoleIds": [
+    "111222333444555666",
+    "999888777666555444"
+  ]
+}
+```
+
+If `allowedRoleIds` is an empty array (`[]`), all users can use commands — suitable for private servers but not recommended for servers with untrusted members.
+
+<Note>
+  The Discord extension is implemented with **JDA 6.4.1** and **Cloud JDA6** for slash command handling. All JDA and Cloud dependencies are relocated to `gg.scala.universe.libs.*` inside the extension JAR to prevent classpath conflicts with other extensions.
+</Note>

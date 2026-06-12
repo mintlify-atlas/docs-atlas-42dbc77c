@@ -1,0 +1,247 @@
+---
+title: "Console Commands Reference for Universe"
+sidebarTitle: "Console Commands"
+description: "Complete reference for Universe's interactive console and REST command system, including cluster, instance, config, template, and API key management."
+---
+
+Universe exposes every management operation through a unified command system. The exact same commands work whether you type them into the interactive TTY console, attach to a running Docker container, or send them over the REST API. There is no separate "API-only" operation set — the console and the HTTP endpoint share the same command dispatcher.
+
+## Accessing the Console
+
+<Tabs>
+  <Tab title="Interactive TTY">
+    When Universe runs in a terminal, the JLine-powered console is available directly. Type any command and press Enter.
+
+    ```bash
+    cluster status
+    instance list
+    instance create default
+    stop
+    ```
+  </Tab>
+  <Tab title="Docker Attach">
+    If Universe runs in a Docker container with `stdin_open: true` and `tty: true`, attach to the container's stdin:
+
+    ```bash
+    docker attach universe-master
+    ```
+
+    Then type commands directly. Press **Ctrl+P, Ctrl+Q** to detach without stopping the container.
+
+    ```
+    cluster status
+    instance list
+    stop
+    ```
+
+    <Note>
+      Your `docker-compose.yml` must include `stdin_open: true` and `tty: true` for the attach to work. These are required for JLine to function correctly inside a container.
+    </Note>
+  </Tab>
+  <Tab title="REST API">
+    Send any command to `POST /api/commands/execute` with a JSON body. The response contains the command's output as a string.
+
+    ```bash
+    curl -X POST http://localhost:7000/api/commands/execute \
+      -H "Content-Type: application/json" \
+      -H "Authorization: Bearer unv_your_token_here" \
+      -d '{"command": "cluster status"}'
+    ```
+
+    The endpoint accepts a single `command` field and returns the captured output synchronously, making it suitable for scripting and automation pipelines.
+  </Tab>
+</Tabs>
+
+<Note>
+  All commands shown in this reference work identically via the interactive console and via `POST /api/commands/execute`. There is no distinction between console-only and API-only commands.
+</Note>
+
+---
+
+## Cluster Commands
+
+These commands inspect and control the Hazelcast cluster that connects Master and Wrapper nodes.
+
+| Command | Description |
+|---|---|
+| `cluster status` | Show cluster name, local node UUID, master flag, and a list of all member UUIDs |
+| `cluster nodes` | List all connected nodes with their `nodeId` attribute and UUID |
+| `cluster shutdown` | Dispatch a graceful shutdown task to every node in the cluster |
+
+```bash
+# Check how many members are in the cluster and which is local
+cluster status
+
+# List node IDs and their Hazelcast UUIDs
+cluster nodes
+```
+
+---
+
+## Node Commands
+
+Node commands show per-node resource usage reported through Hazelcast member attributes.
+
+| Command | Description |
+|---|---|
+| `node info` | Show RAM and CPU usage for the local node, plus running instance count |
+| `node resources` | Tabular view of RAM used, RAM max, CPU used, and CPU max for every node |
+
+---
+
+## Instance Commands
+
+Instance commands create, inspect, control, and communicate with running application instances.
+
+| Command | Description |
+|---|---|
+| `instance list` | List all instances: ID, config name, runtime, host, port, and state |
+| `instance create <config>` | Create one instance from the named configuration |
+| `instance create <config> <amount>` | Create multiple instances; each is placed on a resource-eligible node |
+| `instance stop <id>` | Gracefully stop an instance by its 6-character ID |
+| `instance kill <id>` | Force-stop an instance and immediately mark it `STOPPED` |
+| `instance restart <id>` | Stop then recreate an instance from the same configuration |
+| `instance info <id>` | Full details: state, host, port, PID, wrapper node, working directory, last heartbeat |
+| `instance logs <id>` | Print the last 25 lines of the instance's `stdout.log` to the console |
+| `instance execute <id> <cmd>` | Write a command string to the instance's stdin (e.g., Minecraft server commands) |
+
+<CodeGroup>
+```bash Create instances
+# Create one instance from the "default" configuration
+instance create default
+
+# Create three instances at once
+instance create default 3
+```
+
+```bash Inspect and control
+# Full details for instance ab12cd
+instance info ab12cd
+
+# Read the last 25 log lines
+instance logs ab12cd
+
+# Send "say Hello" to the instance's stdin
+instance execute ab12cd say Hello
+
+# Gracefully stop
+instance stop ab12cd
+
+# Force stop (bypasses graceful shutdown)
+instance kill ab12cd
+```
+</CodeGroup>
+
+<Tip>
+  `instance execute` is designed for processes that accept commands on stdin, such as Minecraft servers. For arbitrary shell commands inside a container runtime, use the Docker or Kubernetes runtime's exec facilities instead.
+</Tip>
+
+---
+
+## Configuration Commands
+
+Configuration commands manage the `.json` files that define how instances are created.
+
+| Command | Description |
+|---|---|
+| `config list` | List all loaded configurations with runtime and port range |
+| `config show <name>` | Print all fields of a named configuration |
+| `config create <name> <runtime> <command>` | Create a new configuration in-memory |
+| `config reload` | Re-read all files in `./configuration/` and update the cluster state |
+
+```bash
+# See all configurations
+config list
+
+# Inspect the "default" configuration in full
+config show default
+
+# Reload after editing a .json file on disk
+config reload
+```
+
+---
+
+## Template Commands
+
+Template commands list and synchronise file trees used when creating instances.
+
+| Command | Description |
+|---|---|
+| `template list` | List all templates in `./templates/` as `<group>/<name>` pairs |
+| `template sync <pattern> <node>` | Copy template(s) matching the pattern to the named target node |
+
+### Template Sync Patterns
+
+The `pattern` argument to `template sync` supports three forms:
+
+| Pattern | Effect |
+|---|---|
+| `server/base` | Sync only the single template `server/base` |
+| `server/*` | Sync every template whose group is `server` |
+| `*` | Sync all templates in all groups |
+
+```bash
+# Sync a single template to node-2
+template sync server/base node-2
+
+# Sync every template in the "server" group
+template sync server/* node-2
+
+# Sync the entire template library
+template sync * node-2
+```
+
+---
+
+## Extension Commands
+
+| Command | Description |
+|---|---|
+| `extension list` | Show all installed extensions, their versions, and load status |
+| `extension reload` | Call `onReload()` on every reloadable extension |
+
+Extensions that declare `reloadable() = false` are skipped during reload and a warning is printed for each one skipped.
+
+---
+
+## API Key Commands
+
+API keys are managed through their own `key` sub-command group. These commands interact with the configured database backend and take effect immediately.
+
+| Command | Description |
+|---|---|
+| `key list` | List all registered keys: ID, permission level, and masked token |
+| `key create <keyId> <permission>` | Create a new key; prints the full token once — it cannot be retrieved later |
+| `key delete <keyId>` | Permanently delete a key by its human-readable ID |
+
+```bash
+# Create an admin key for CI/CD automation
+key create ci-deploy ALL
+
+# Create a read-only key for a monitoring dashboard
+key create grafana-reader PUBLIC
+
+# List all keys (tokens are masked as "abcd...wxyz")
+key list
+
+# Remove a key that is no longer needed
+key delete ci-deploy
+```
+
+<Warning>
+  The full token is only displayed once at creation time. If it is lost, delete the key and create a new one — there is no token recovery mechanism.
+</Warning>
+
+Valid permission values are `ALL` (full admin access) and `PUBLIC` (read-only, rate-limited). See [Security](/operations/security) for a detailed explanation of each level.
+
+---
+
+## System Commands
+
+| Command | Description |
+|---|---|
+| `help` | Print all available commands with brief descriptions |
+| `stop` / `exit` | Trigger a graceful shutdown of the local Universe node |
+
+`stop` calls the application shutdown hook, which closes Hazelcast, stops all managed instances, and exits the JVM cleanly.

@@ -1,0 +1,310 @@
+---
+title: "Building Custom Extensions for Universe"
+sidebarTitle: "Building Extensions"
+description: "Implement the Extension interface, register custom providers via injected registries in onLoad(), and ship the result as a single JAR in ./extensions/."
+---
+
+Universe's extension API is designed to be self-contained: your extension depends only on `:api` and `:extensions:extension-api`, receives Guice-managed dependencies via field injection, and registers providers in `onLoad()`. This page walks through every step from project setup to deployment.
+
+## Extension Anatomy
+
+An extension is a compiled JAR placed in `./extensions/`. At startup, `ExtensionService` adds all JARs in that directory to the runtime classloader and then scans for classes that implement `Extension`. Any implementing class with a no-argument constructor is instantiated, injected, and stored in the extension registry.
+
+The minimal requirements for a loadable extension are:
+
+1. A class that implements `Extension` from `:extensions:extension-api`
+2. Implementations of `id()`, `version()`, `onLoad()`, `onUnload()`, and `onReload()`
+3. A no-argument constructor (Kotlin data classes and plain classes satisfy this automatically)
+
+## The Example Extension
+
+The `extension-example` module in the Universe repository is the canonical minimal implementation:
+
+```kotlin
+package gg.scala.universe.example
+
+import gg.scala.universe.console.LogLevel
+import gg.scala.universe.extension.Extension
+import gg.scala.universe.console.log
+
+class ExampleExtension : Extension {
+    override fun id(): String = "example-extension"
+    override fun version(): String = "0.0.1"
+
+    override fun onLoad() {
+        log("ExampleExtension loaded!", LogLevel.SUCCESS)
+    }
+
+    override fun onUnload() {
+        log("ExampleExtension unloaded!", LogLevel.SUCCESS)
+    }
+
+    override fun onReload() {
+        log("ExampleExtension reloaded!", LogLevel.SUCCESS)
+    }
+}
+```
+
+This extension does nothing beyond logging — use it as a starting point.
+
+## Receiving Guice Dependencies
+
+`ExtensionService` calls `app.injector.injectMembers(extension)` before `onLoad()`. Any `@Inject`-annotated field in your extension class is populated with the corresponding Guice binding from the application's injector, giving you access to all registries and services:
+
+```kotlin
+import com.google.inject.Inject
+import gg.scala.universe.extension.Extension
+import gg.scala.universe.template.TemplateVariableRegistry
+
+class MyExtension : Extension {
+    override fun id() = "my-extension"
+    override fun version() = "1.0.0"
+
+    @Inject
+    private lateinit var variableRegistry: TemplateVariableRegistry
+
+    override fun onLoad() {
+        variableRegistry.register(MyVariableProvider())
+    }
+
+    override fun onUnload() {
+        // clean up if needed
+    }
+
+    override fun onReload() {
+        // re-read config, re-register providers, etc.
+    }
+}
+```
+
+## Extension Point Interfaces
+
+The `:extensions:extension-api` module exposes five interfaces you can implement to extend Universe's core behaviour. Register each via its corresponding injected registry in `onLoad()`.
+
+<Accordion title="TemplateStorageProvider — custom template storage backends">
+  Implement `TemplateStorageProvider` to add a new storage backend (FTP, GCS, Azure Blob, etc.). Register via `TemplateStorageRegistry`.
+
+  ```kotlin
+  interface TemplateStorageProvider {
+      /** Unique storage key, e.g. "s3", "ftp" */
+      val storageKey: String
+
+      /** Download a template zip to the local templates directory */
+      fun downloadTemplate(group: String, name: String): Boolean
+
+      /** Upload a local template zip to remote storage */
+      fun uploadTemplate(group: String, name: String): Boolean
+
+      /** List available templates in the given group */
+      fun listTemplates(group: String): List<String>
+
+      /**
+       * Download and extract directly into targetDir (used during instance deploy).
+       * The default implementation delegates to downloadTemplate then copies files.
+       */
+      fun extractTemplate(group: String, name: String, targetDir: java.nio.file.Path, overwrite: Boolean): Boolean
+
+      /** Sync remote → local (default: delegates to downloadTemplate) */
+      fun syncTemplate(group: String, name: String): Boolean
+  }
+  ```
+
+  Registration:
+
+  ```kotlin
+  @Inject private lateinit var templateStorageRegistry: TemplateStorageRegistry
+
+  override fun onLoad() {
+      templateStorageRegistry.register(MyStorageProvider())
+  }
+  ```
+
+  Templates in `templateInstallationConfig` reference this backend with `"storage": "<storageKey>"`.
+</Accordion>
+
+<Accordion title="TemplateVariableProvider — inject custom template variables">
+  Implement `TemplateVariableProvider` to inject additional `%PLACEHOLDER%` variables during instance deployment. Register via `TemplateVariableRegistry`.
+
+  ```kotlin
+  interface TemplateVariableProvider {
+      /**
+       * Returns a map of placeholder → replacement value.
+       * Example: mapOf("%CUSTOM_VAR%" to "customValue")
+       */
+      fun provideVariables(
+          configuration: Configuration,
+          instanceId: String,
+          allocatedPort: Int
+      ): Map<String, String>
+  }
+  ```
+
+  Registration:
+
+  ```kotlin
+  @Inject private lateinit var variableRegistry: TemplateVariableRegistry
+
+  override fun onLoad() {
+      variableRegistry.register(MyVariableProvider())
+  }
+  ```
+
+  All variables returned are applied to every file listed in `fileModifications` and to every value in `environmentVariables`.
+</Accordion>
+
+<Accordion title="DatabaseProvider — custom persistence backends">
+  Implement `DatabaseProvider` to add a new database backend. Register via `DatabaseRegistry`.
+
+  ```kotlin
+  interface DatabaseProvider {
+      /** Unique provider key, e.g. "h2", "mysql", "mongodb" */
+      val providerKey: String
+
+      fun connect()
+      fun disconnect()
+      fun isConnected(): Boolean
+
+      // API Key Operations
+      fun getApiKeyByToken(token: String): ApiKey?
+      fun getApiKeyById(keyId: String): ApiKey?
+      fun saveApiKey(apiKey: ApiKey)
+      fun deleteApiKey(keyId: String)
+      fun listApiKeys(): List<ApiKey>
+  }
+  ```
+
+  Registration:
+
+  ```kotlin
+  @Inject private lateinit var databaseRegistry: DatabaseRegistry
+
+  override fun onLoad() {
+      databaseRegistry.register("my-db", MyDatabaseProvider())
+  }
+  ```
+
+  Activate the provider by setting `"provider": "my-db"` in `./database.json`.
+</Accordion>
+
+<Accordion title="MetricsProvider — custom metrics exporters">
+  Implement `MetricsProvider` to push or expose metrics in a format not covered by the built-in Prometheus and InfluxDB extensions. Register via `MetricsRegistry`.
+
+  ```kotlin
+  interface MetricsProvider {
+      /** Unique provider key, e.g. "prometheus", "influxdb" */
+      val providerKey: String
+
+      fun start()
+      fun stop()
+
+      /** Return current metrics snapshot as a string (Prometheus text, JSON, etc.) */
+      fun scrape(): String
+
+      fun gauge(name: String, value: Double, tags: Map<String, String> = emptyMap())
+      fun counter(name: String, amount: Double = 1.0, tags: Map<String, String> = emptyMap())
+      fun timer(name: String, durationMs: Long, tags: Map<String, String> = emptyMap())
+  }
+  ```
+
+  Registration:
+
+  ```kotlin
+  @Inject private lateinit var metricsRegistry: MetricsRegistry
+
+  override fun onLoad() {
+      metricsRegistry.register("my-metrics", MyMetricsProvider())
+  }
+  ```
+</Accordion>
+
+<Accordion title="RuntimeProvider — custom execution environments">
+  `RuntimeProvider` lives in the main `:api` module (not `:extensions:extension-api`) and is implemented by the Docker and Kubernetes extensions. It defines how instances are started, stopped, and monitored. Register via `RuntimeRegistry`.
+
+  ```kotlin
+  // Skeletal implementation — see runtime-docker or runtime-k8s for full examples
+  class MyRuntimeProvider : RuntimeProvider {
+      override val runtimeKey = "my-runtime"
+
+      override fun start(instance: Instance, config: Configuration) { /* ... */ }
+      override fun stop(instance: Instance) { /* ... */ }
+      override fun execute(instance: Instance, command: String) { /* ... */ }
+  }
+  ```
+
+  Registration:
+
+  ```kotlin
+  @Inject private lateinit var runtimeRegistry: RuntimeRegistry
+
+  override fun onLoad() {
+      runtimeRegistry.register("my-runtime", MyRuntimeProvider())
+  }
+  ```
+
+  Instances use this runtime when `"runtime": "my-runtime"` is set in their configuration.
+</Accordion>
+
+## Gradle Project Setup
+
+Create a new submodule under `extensions/` and add it to `settings.gradle.kts`. Your `build.gradle.kts` should only compile against `:api` and `:extensions:extension-api`, never against `:app`. Use `runtimeDownload` for any external libraries you need at runtime so they are not bundled into the core JAR.
+
+```kotlin
+// extensions/my-extension/build.gradle.kts
+
+plugins {
+    id("kotlin-jvm")
+}
+
+dependencies {
+    // Universe public API — data classes, RuntimeProvider, etc.
+    compileOnly(project(":api"))
+
+    // Extension-facing interfaces: Extension, TemplateStorageProvider, etc.
+    compileOnly(project(":extensions:extension-api"))
+
+    // External runtime dependencies — downloaded by the loader at startup, not shadowed into the JAR
+    runtimeDownload(libs.my.library)
+}
+```
+
+Register the module in `settings.gradle.kts` by adding it to the `subProjects` array of the `registerSubProjects("extensions", "extension", ...)` call.
+
+## `masterOnly()` and `reloadable()` Usage
+
+Override these two flags in your `Extension` implementation to control when and how your extension is active:
+
+```kotlin
+class MasterOnlyExtension : Extension {
+    override fun id() = "my-master-extension"
+    override fun version() = "1.0.0"
+
+    // This extension only makes sense on the Master node.
+    // ExtensionService will silently skip it on Wrapper nodes.
+    override fun masterOnly(): Boolean = true
+
+    // This extension manages a persistent connection that cannot safely
+    // be re-established mid-flight. Refuse runtime reloads.
+    override fun reloadable(): Boolean = false
+
+    override fun onLoad() { /* start persistent connection */ }
+    override fun onUnload() { /* close connection */ }
+    override fun onReload() { /* never called — reloadable() = false */ }
+}
+```
+
+## Build Rules Summary
+
+<CardGroup cols={2}>
+  <Card title="Depend only on :api and :extension-api" icon="check">
+    Never add a `compileOnly` or `implementation` dependency on `:app`. Extensions must not access internal application classes.
+  </Card>
+  <Card title="Use runtimeDownload for external deps" icon="check">
+    Universe's loader downloads `runtimeDownload` dependencies at startup. Do not shadow external libraries into your extension JAR — this causes classpath conflicts.
+  </Card>
+  <Card title="Register via injected registries" icon="check">
+    Call `registry.register(...)` inside `onLoad()`, never in a static initialiser or companion object. The injector is not available before `onLoad()` runs.
+  </Card>
+  <Card title="Unregister in onUnload()" icon="check">
+    Always unregister your providers and commands in `onUnload()` so that resources are cleaned up when the node shuts down or the extension is removed.
+  </Card>
+</CardGroup>

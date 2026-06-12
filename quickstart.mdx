@@ -1,47 +1,321 @@
 ---
-title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+title: "Get Started with Universe in Minutes"
+sidebarTitle: "Quickstart"
+description: "Build the fat JAR, write your first node config and instance configuration, create a template, and deploy a running instance via REST API or console."
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
-
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
+Universe ships as a single fat JAR produced by the `loader` module. The loader bootstraps a custom classloader, extracts the embedded `app.jarinjar`, resolves and downloads runtime dependencies listed in `dependencies.txt`, and then invokes the orchestrator. Everything — Master API, Wrapper runtime, and console — lives in that one file, so getting a node running takes only a few minutes once the JAR is built.
 
 ## Prerequisites
 
-Before you begin, you must have:
+- **JDK 25+** and **Gradle 9.5+** (required to build from source)
+- Linux or macOS recommended for the built-in `screen` and `tmux` runtimes
+- Docker (optional) if you prefer the container quick-start
 
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
-
-## Get started
+---
 
 <Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
+
+  <Step title="Build the JAR">
+    Clone the repository and run the Gradle build. Compiled artifacts are automatically copied to `.built/` by the build script.
 
     ```bash
-    npm install your-package
+    ./gradlew build
     ```
+
+    After a successful build you will find:
+
+    ```
+    .built/
+      universe-loader-0.0.1.jar   ← the only file you need to run Universe
+      minecraft-modern-*.jar
+      minecraft-velocity-*.jar
+      ...
+    ```
+
+    <Tip>
+      You can distribute or copy `universe-loader-0.0.1.jar` to any remote node. It is entirely self-contained.
+    </Tip>
   </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
+
+  <Step title="Run the JAR for the first time">
+    Navigate to the directory where you want Universe to store its data, then launch the loader:
 
     ```bash
-    your-cli init
+    java -jar .built/universe-loader-0.0.1.jar
     ```
+
+    On first run, Universe detects missing configuration and creates the following directory structure:
+
+    ```
+    ./config.json          ← node identity and cluster settings
+    ./database.json        ← database provider settings
+    ./configuration/       ← instance configuration files (.json)
+    ./templates/           ← template file trees (<group>/<name>/)
+    ./running/             ← active instance working directories
+    ./extensions/          ← extension JARs and their configs
+    ./logs/universe.log    ← SLF4J/Logback log file
+    ```
+
+    The node will start in **Master** mode by default (`isMasterNode: true` in the generated `config.json`). Stop the process (`Ctrl+C` or type `stop`) and edit the generated files before running again.
   </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
+
+  <Step title="Edit ./config.json">
+    The main node configuration controls the node's identity, cluster membership, and which role it assumes. Open `./config.json` and review every field:
+
+    ```json
+    {
+      "address": "127.0.0.1",
+      "port": 6000,
+      "apiPort": 7000,
+      "nodeId": "node-1",
+      "clusterName": "universe-cluster",
+      "isMasterNode": true,
+      "masterAddress": "127.0.0.1",
+      "masterPort": 6000,
+      "masterApiPort": 7000
+    }
+    ```
+
+    | Field | Description |
+    |-------|-------------|
+    | `address` | IP address this node advertises to the Hazelcast cluster |
+    | `port` | Hazelcast cluster port (default `6000`) |
+    | `apiPort` | Ktor REST API port — only used when `isMasterNode: true` (default `7000`) |
+    | `nodeId` | Unique string identifier for this node, used in instance assignment and template sync |
+    | `clusterName` | Hazelcast cluster group name — all nodes in the same cluster must share this value |
+    | `isMasterNode` | `true` → start REST API and run `InstanceCountEnforcer`; `false` → join as Wrapper only |
+    | `masterAddress` | IP or hostname of the Master node (used by Wrapper nodes to join the Hazelcast cluster) |
+    | `masterPort` | Hazelcast port on the Master |
+    | `masterApiPort` | REST API port on the Master (used by Minecraft plugins and tooling) |
+
+    <Note>
+      A Master node can also run instances locally. You do not need a separate Wrapper node for a single-machine deployment.
+    </Note>
+  </Step>
+
+  <Step title="Create your first template directory">
+    Templates are file trees stored under `./templates/<group>/<name>/`. Universe copies the resolved tree into `./running/<instance-id>/` before launching the process, replacing any variables it finds in files listed under `fileModifications`.
+
+    Create a minimal template for a server:
 
     ```bash
-    your-cli start
+    mkdir -p ./templates/server/base
+    # Add any files your process needs, for example:
+    cp /path/to/server.jar ./templates/server/base/server.jar
+    ```
+
+    A minimal `server.properties` that uses built-in variables might look like:
+
+    ```properties
+    server-port=%PORT%
+    server-ip=%HOST_ADDRESS%
+    ```
+
+    Built-in template variables replaced at deploy time:
+
+    | Variable | Value |
+    |----------|-------|
+    | `%PORT%` | Allocated instance port |
+    | `%INSTANCE_ID%` | 6-character alphanumeric instance ID |
+    | `%MASTER_IP%` / `%MASTER_ADDRESS%` | Master node address |
+    | `%MASTER_PORT%` | Master Hazelcast port |
+    | `%MASTER_API_PORT%` | Master REST API port |
+    | `%NODE_ID%` | Local node ID |
+    | `%HOST_ADDRESS%` | Local host address (or runtime-specific override) |
+    | `%CONFIGURATION_NAME%` | Configuration name |
+  </Step>
+
+  <Step title="Create your first instance configuration">
+    Instance configurations live in `./configuration/` as JSON files. Create `./configuration/default.json`:
+
+    ```json
+    {
+      "name": "default",
+      "runtime": "screen",
+      "command": "java -jar server.jar",
+      "static": false,
+      "instanceGroups": [],
+      "nodes": ["node-1"],
+      "hostAddress": "127.0.0.1",
+      "availablePorts": { "min": 25565, "max": 25570 },
+      "minimumServiceCount": 1,
+      "environmentVariables": {},
+      "templateInstallationConfig": {
+        "allOf": [{ "name": "base", "group": "server", "storage": "local", "priority": 0 }],
+        "allInGroups": [],
+        "oneOf": [],
+        "oneInGroups": [],
+        "onTemplatePasteOverridePresentFiles": false
+      },
+      "fileModifications": ["server.properties"],
+      "properties": {}
+    }
+    ```
+
+    | Field | Description |
+    |-------|-------------|
+    | `runtime` | Runtime provider key: `screen`, `tmux`, `process`, `docker`, `k8s` |
+    | `command` | Shell command executed inside the instance working directory |
+    | `static` | `true` → working directory is preserved between restarts |
+    | `nodes` | List of `nodeId` values eligible to host this configuration |
+    | `availablePorts` | Port range Universe scans when allocating the instance port |
+    | `minimumServiceCount` | `InstanceCountEnforcer` ensures at least this many instances are always running |
+    | `templateInstallationConfig.allOf` | Templates always copied, in `priority` order (ascending) |
+    | `fileModifications` | Files scanned for `%VARIABLE%` replacement after template copy |
+    | `properties` | Custom key→value pairs exposed as `%KEY%` template variables |
+  </Step>
+
+  <Step title="Deploy an instance">
+    Start the node:
+
+    ```bash
+    java -jar .built/universe-loader-0.0.1.jar
+    ```
+
+    You can create an instance either through the **REST API** or the **console**.
+
+    <Tabs>
+      <Tab title="REST API">
+        ```bash
+        # Create a new instance from the "default" configuration
+        curl -X POST http://localhost:7000/api/instances \
+          -H "Content-Type: application/json" \
+          -d '{"configurationName": "default"}'
+        ```
+
+        The response contains the new `InstanceInfo` object including the assigned `id`, `allocatedPort`, and initial `state` of `CREATING`.
+
+        ```bash
+        # Stop an instance by ID
+        curl -X DELETE http://localhost:7000/api/instances/<id>
+        ```
+      </Tab>
+      <Tab title="Console command">
+        Type directly in the running terminal (or attach via `docker attach`):
+
+        ```
+        instance create default
+        instance list
+        instance stop <id>
+        ```
+
+        You can also execute any console command over the REST API without needing terminal access:
+
+        ```bash
+        curl -X POST http://localhost:7000/api/commands/execute \
+          -H "Content-Type: application/json" \
+          -d '{"command": "instance create default"}'
+        ```
+      </Tab>
+    </Tabs>
+  </Step>
+
+  <Step title="Verify the running instance">
+    List all instances to confirm the new instance is `ONLINE`:
+
+    ```bash
+    curl http://localhost:7000/api/instances
+    ```
+
+    Example response:
+
+    ```json
+    [
+      {
+        "id": "a1b2c3",
+        "configurationName": "default",
+        "wrapperNodeId": "node-1",
+        "hostAddress": "127.0.0.1",
+        "allocatedPort": 25565,
+        "state": "ONLINE",
+        "lastHeartbeat": 1718000000000,
+        "processPid": 12345,
+        "runtime": "screen"
+      }
+    ]
+    ```
+
+    Other useful endpoints:
+
+    ```bash
+    # Health check
+    curl http://localhost:7000/api/ping
+
+    # Node info (version, uptime, resources)
+    curl http://localhost:7000/api/node
+
+    # Cluster node list
+    curl http://localhost:7000/api/cluster/nodes
+
+    # Tail last 100 log lines for an instance
+    curl "http://localhost:7000/api/instances/a1b2c3/logs?lines=100"
     ```
   </Step>
+
 </Steps>
 
-<Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
+---
 
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
-</Tip>
+## Docker Compose Quick-Start
+
+<Note>
+  Docker Compose is the fastest way to get a Master node running without building from source. The image is available at `git.lunarlabs.dev/scala/universe:latest`.
+</Note>
+
+Create a `docker-compose.yml` in your working directory:
+
+```yaml
+services:
+  universe-master:
+    image: git.lunarlabs.dev/scala/universe:latest
+    container_name: universe-master
+    stdin_open: true
+    tty: true
+    ports:
+      - "7000:7000"   # REST API
+      - "6000:6000"   # Hazelcast
+    volumes:
+      - ./data:/data
+
+  # Optional: add a dedicated Wrapper node
+  universe-wrapper:
+    image: git.lunarlabs.dev/scala/universe:latest
+    depends_on:
+      - universe-master
+    volumes:
+      - ./wrapper-data:/data
+```
+
+For the Wrapper's `./wrapper-data/config.json`, set `isMasterNode: false` and point to the Master:
+
+```json
+{
+  "isMasterNode": false,
+  "masterAddress": "universe-master",
+  "masterPort": 6000,
+  "masterApiPort": 7000
+}
+```
+
+Start both services:
+
+```bash
+docker compose up -d
+```
+
+Interact with the Master console via attach, or use the REST API:
+
+```bash
+# Interactive console attach
+docker attach universe-master
+
+# Or via REST API (recommended)
+curl -X POST http://localhost:7000/api/commands/execute \
+  -H "Content-Type: application/json" \
+  -d '{"command": "cluster status"}'
+```
+
+<Warning>
+  When running instances inside Docker containers, the spawned processes inherit the container environment. Use a runtime extension such as `runtime-docker` if you need isolated per-instance containers rather than bare processes inside the orchestrator container.
+</Warning>

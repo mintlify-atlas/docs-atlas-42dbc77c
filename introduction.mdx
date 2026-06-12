@@ -1,0 +1,94 @@
+---
+title: "Universe: Distributed Cluster Orchestrator for Instances"
+sidebarTitle: "Introduction"
+description: "Universe is a single-JAR cluster orchestrator that deploys instances across Master/Wrapper nodes via Hazelcast task dispatch and a Ktor REST API."
+---
+
+Universe is a general-purpose instance orchestrator packaged as a single fat JAR. A **Master** node exposes a Ktor REST API and maintains authoritative cluster state in Hazelcast distributed maps, while any number of **Wrapper** nodes receive tasks over the Hazelcast `IExecutorService`, copy templates into working directories, replace dynamic variables, and launch processes through pluggable runtime providers. Originally inspired by Minecraft cloud systems such as CloudNet and SimpleCloud, Universe has been designed from the ground up to be runtime-agnostic — built-in `screen`, `tmux`, and `process` runtimes ship with the JAR, and Docker, Kubernetes, and every other runtime arrives as a drop-in extension.
+
+## Master / Wrapper Topology
+
+Every Universe node runs the same JAR. The `isMasterNode` flag in `./config.json` determines the role the node assumes at startup:
+
+- **Master** — starts the Ktor REST API, registers a `ResilienceMembershipListener` to track Wrapper health, loads all instance configurations from `./configuration/`, and enforces minimum service counts via `InstanceCountEnforcer`.
+- **Wrapper** — joins the Hazelcast cluster using the Master's address, receives serialised task objects via `IExecutorService`, and executes them through `TaskRouter` → `TemplateManager` → `RuntimeProvider`.
+
+A Master node can also run instances locally, so a single-node deployment is fully supported without a separate Wrapper.
+
+## Key Features
+
+<CardGroup cols={2}>
+  <Card
+    title="Single Fat JAR"
+    icon="box"
+    href="/quickstart"
+  >
+    Master and Wrapper both run from the same `universe-loader-*.jar`. The loader bootstraps a custom classloader, downloads runtime dependencies, and launches the application — no installation step required.
+  </Card>
+  <Card
+    title="Template-Based Deployment"
+    icon="folder-tree"
+    href="/quickstart"
+  >
+    Instances are created from file-tree templates stored under `./templates/<group>/<name>/`. Built-in variables like `%PORT%`, `%INSTANCE_ID%`, and `%MASTER_IP%` are replaced at deploy time in any file listed under `fileModifications`.
+  </Card>
+  <Card
+    title="Pluggable Runtimes"
+    icon="plug"
+    href="/runtimes/overview"
+  >
+    Built-in `screen`, `tmux`, and `process` runtimes are registered at startup. Docker and Kubernetes runtimes arrive as extension JARs. Any provider that implements `RuntimeProvider` can be registered at any time via `RuntimeRegistry`.
+  </Card>
+  <Card
+    title="REST API"
+    icon="code"
+    href="/api-reference/overview"
+  >
+    A Ktor 3.4.3 HTTP server on the Master exposes endpoints for instance CRUD, lifecycle control, log retrieval, live-log WebSocket streaming, template management, cluster inspection, and an interactive console WebSocket.
+  </Card>
+  <Card
+    title="Extension System"
+    icon="puzzle-piece"
+    href="/extensions/overview"
+  >
+    Extensions are self-registering JARs placed in `./extensions/`. They receive Guice-injected registries (`RuntimeRegistry`, `TemplateStorageRegistry`, `TemplateVariableRegistry`) and can contribute runtimes, storage backends, metrics exporters, database providers, and DevOps integrations.
+  </Card>
+  <Card
+    title="Minecraft Integration"
+    icon="cube"
+    href="/minecraft/overview"
+  >
+    First-class Minecraft support through a JVM-8-compatible `:minecraft:api` module and platform plugins for Paper 1.21+, Spigot 1.8.8, Velocity 3.5.0, BungeeCord, and Folia. Proxy plugins auto-register backend instances as servers and handle player routing.
+  </Card>
+</CardGroup>
+
+## What You Can Build
+
+Universe is suitable for any workload that requires distributing multiple short-lived or long-running JVM (or non-JVM) processes across a fleet of machines:
+
+- **Game server networks** — spin up Minecraft, Velocity, or BungeeCord instances on demand, auto-connect players via `LEAST_POPULATED` or `RANDOM` strategies.
+- **Microservice clusters** — deploy containerised or bare-process services from templated configurations, with per-configuration environment variables and port ranges.
+- **CI/CD environments** — use the GitOps extension to sync templates and configs from Git; export ArgoCD manifests for Kubernetes tracking.
+- **Edge compute nodes** — bridge nodes over Tailscale mesh networks; use `%TAILSCALE_IP%` as `hostAddress` for encrypted cross-node connectivity.
+
+## Module Breakdown
+
+| Module | Role |
+|--------|------|
+| `api` | Shared data classes (`InstanceInfo`, `Configuration`, `TemplateInstallationConfig`), task DTOs, `RuntimeProvider` / `RuntimeRegistry` interfaces |
+| `app` | Core orchestrator: Hazelcast service, Ktor API, `TemplateManager`, `TaskRouter`, built-in runtimes, command framework |
+| `loader` | Bootstrap classloader — extracts `app.jarinjar`, downloads runtime dependencies from `dependencies.txt`, and invokes `AppKt.run()` |
+| `extensions/extension-api` | Extension-facing interfaces: `Extension`, `TemplateStorageProvider`, `TemplateVariableProvider`, `TemplateStorageRegistry` |
+| `extensions/runtime-docker` | Docker container runtime — manages container lifecycle, port bindings, volume mounts, and exec commands |
+| `extensions/runtime-k8s` | Kubernetes Pod runtime — provides `%NAMESPACE%`, `%SERVICE_DNS%`, and `%POD_NAME%` template variables |
+| `extensions/storage-s3` | AWS S3 template storage backend with `s3 upload` / `s3 download` console commands |
+| `extensions/tailscale` | Tailscale mesh-network extension — injects `%TAILSCALE_IP%`, `%TAILSCALE_MAGIC_DNS%`, `%TAILSCALE_HOSTNAME%` |
+| `extensions/gitops` | Git-based template and configuration sync |
+| `extensions/argocd` | Kubernetes manifest exporter for ArgoCD tracking |
+| `extensions/discord` | Discord bot for cluster management |
+| `minecraft/minecraft-api` | JVM 8 compatible public API for Minecraft plugin developers |
+| `minecraft/minecraft-modern` | Paper 1.21.11+ plugin with MiniMessage |
+| `minecraft/minecraft-legacy` | Spigot 1.8.8 plugin with legacy `&` color codes |
+| `minecraft/minecraft-velocity` | Velocity 3.5.0 proxy — auto-registers instances and routes players |
+| `minecraft/minecraft-bungee` | BungeeCord proxy plugin |
+| `minecraft/minecraft-folia` | Folia 1.21+ regionised tick scheduling plugin |

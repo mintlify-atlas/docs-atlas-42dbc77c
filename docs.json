@@ -1,72 +1,113 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mintlify Starter Kit",
+  "name": "Universe",
+  "theme": "aspen",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#fb6304",
+    "light": "#d40404",
+    "dark": "#fb6304"
   },
-  "favicon": "/favicon.svg",
-  "navigation": {
-    "pages": [
-      {
-        "group": "Getting Started",
-        "pages": [
-          "index",
-          "quickstart"
-        ]
-      }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
-  },
+  "favicon": "https://media.brand.dev/4f9af337-446d-454c-b954-b133450c128a.svg",
   "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
     "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://app.mintlify.com"
+      "type": "github",
+      "href": "https://github.com/universeclouddev/Universe"
     }
-  },
-  "contextual": {
-    "options": [
-      "copy",
-      "view",
-      "chatgpt",
-      "claude",
-      "perplexity",
-      "mcp",
-      "cursor",
-      "vscode"
-    ]
   },
   "footer": {
     "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
+      "github": "https://github.com/universeclouddev/Universe"
     }
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Getting Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "architecture"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "configuration/node-config",
+              "configuration/instance-config",
+              "configuration/database",
+              "configuration/templates"
+            ]
+          },
+          {
+            "group": "Runtimes",
+            "pages": [
+              "runtimes/overview",
+              "runtimes/screen-tmux",
+              "runtimes/docker",
+              "runtimes/kubernetes"
+            ]
+          },
+          {
+            "group": "Extensions",
+            "pages": [
+              "extensions/overview",
+              "extensions/storage-s3",
+              "extensions/tailscale",
+              "extensions/gitops",
+              "extensions/argocd",
+              "extensions/discord",
+              "extensions/metrics",
+              "extensions/databases",
+              "extensions/building-extensions"
+            ]
+          },
+          {
+            "group": "Minecraft Integration",
+            "pages": [
+              "minecraft/overview",
+              "minecraft/plugins",
+              "minecraft/proxy-plugins",
+              "minecraft/api"
+            ]
+          },
+          {
+            "group": "Operations",
+            "pages": [
+              "operations/console-commands",
+              "operations/networking",
+              "operations/logging",
+              "operations/security"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "api-reference/overview",
+              "api-reference/authentication"
+            ]
+          },
+          {
+            "group": "Endpoints",
+            "pages": [
+              "api-reference/instances",
+              "api-reference/configurations",
+              "api-reference/templates",
+              "api-reference/cluster",
+              "api-reference/node",
+              "api-reference/commands",
+              "api-reference/websockets"
+            ]
+          }
+        ]
+      }
+    ]
   }
 }

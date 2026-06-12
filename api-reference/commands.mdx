@@ -1,0 +1,164 @@
+---
+title: "Commands API: Execute Console Commands via REST"
+sidebarTitle: "Commands"
+description: "Execute any Universe console command over HTTP and receive its captured output as a structured JSON response — no SSH or terminal access required."
+---
+
+The Commands API bridges the Universe interactive console and the REST interface. Every command that works in the terminal (or via `docker attach`) also works here. The server captures all output lines produced by the command and returns them in the response body, making this endpoint ideal for automation, scripts, and remote administration dashboards.
+
+All requests require a Bearer token with **ALL** permission.
+
+<Note>
+  This endpoint executes commands on the node that receives your HTTP request. If you need to run a command on a specific remote node, use `POST /api/cluster/nodes/{id}/command` — though note that remote dispatch is not yet fully implemented in the current version.
+</Note>
+
+---
+
+## Available Console Commands
+
+All built-in Universe console commands are available through this endpoint:
+
+| Command | Description |
+|---------|-------------|
+| `cluster status` | Show cluster members and local node info. |
+| `cluster nodes` | List all connected nodes. |
+| `instance list` | List all instances with state, host, and port. |
+| `instance create <config>` | Create a new instance from a configuration. |
+| `instance stop <id>` | Stop an instance by its 6-character ID. |
+| `instance info <id>` | Show full details for an instance. |
+| `instance execute <id> <cmd>` | Send a command to an instance's stdin. |
+| `config list` | List all loaded configurations. |
+| `config reload` | Reload configurations from `./configuration/`. |
+| `template list` | List all local templates. |
+| `template sync <pattern> <node>` | Sync templates to another cluster node. |
+| `extension list` | Show installed and loaded extensions. |
+| `extension reload` | Trigger `onReload()` on all extensions. |
+| `help` | Show all available commands and their descriptions. |
+
+---
+
+## Endpoints
+
+### POST /api/commands/execute
+
+Executes a console command and returns the captured output.
+
+**Authentication:** ALL permission required.
+
+**Request Body**
+
+<ParamField body="command" type="string" required>
+  The full console command string to execute, exactly as you would type it in the terminal (e.g., `cluster status`, `instance list`, `help`).
+</ParamField>
+
+**Response — 200 OK**
+
+<ResponseField name="command" type="string">
+  The command string that was executed, echoed back for confirmation.
+</ResponseField>
+
+<ResponseField name="output" type="string[]">
+  Array of output lines produced by the command. Each element is one line of text. May be empty for commands that produce no output.
+</ResponseField>
+
+<Tabs>
+  <Tab title="cluster status">
+    ```bash
+    curl -X POST http://localhost:8080/api/commands/execute \
+      -H "Authorization: Bearer YOUR_API_KEY" \
+      -H "Content-Type: application/json" \
+      -d '{"command": "cluster status"}'
+    ```
+
+    **Example response:**
+
+    ```json
+    {
+      "command": "cluster status",
+      "output": [
+        "Cluster: universe-cluster",
+        "Local Node: node-1 (master)",
+        "Members: 2",
+        "  → node-1 (127.0.0.1:6000) [LOCAL, MASTER]",
+        "  → node-2 (192.168.1.10:6000)"
+      ]
+    }
+    ```
+  </Tab>
+  <Tab title="instance list">
+    ```bash
+    curl -X POST http://localhost:8080/api/commands/execute \
+      -H "Authorization: Bearer YOUR_API_KEY" \
+      -H "Content-Type: application/json" \
+      -d '{"command": "instance list"}'
+    ```
+
+    **Example response:**
+
+    ```json
+    {
+      "command": "instance list",
+      "output": [
+        "ID       CONFIG    STATE    HOST        PORT   NODE",
+        "a1b2c3   lobby     ONLINE   127.0.0.1   25565  node-1",
+        "d4e5f6   lobby     ONLINE   127.0.0.1   25566  node-2",
+        "g7h8i9   game      CREATING 127.0.0.1   25567  node-1"
+      ]
+    }
+    ```
+  </Tab>
+  <Tab title="help">
+    ```bash
+    curl -X POST http://localhost:8080/api/commands/execute \
+      -H "Authorization: Bearer YOUR_API_KEY" \
+      -H "Content-Type: application/json" \
+      -d '{"command": "help"}'
+    ```
+
+    **Example response:**
+
+    ```json
+    {
+      "command": "help",
+      "output": [
+        "Available commands:",
+        "  cluster status        - Show cluster members and node info",
+        "  cluster nodes         - List all connected nodes",
+        "  instance list         - List all instances",
+        "  instance create <cfg> - Create instance from configuration",
+        "  instance stop <id>    - Stop an instance",
+        "  ..."
+      ]
+    }
+    ```
+  </Tab>
+  <Tab title="instance create">
+    ```bash
+    curl -X POST http://localhost:8080/api/commands/execute \
+      -H "Authorization: Bearer YOUR_API_KEY" \
+      -H "Content-Type: application/json" \
+      -d '{"command": "instance create lobby"}'
+    ```
+
+    **Example response:**
+
+    ```json
+    {
+      "command": "instance create lobby",
+      "output": [
+        "Creating instance from configuration: lobby",
+        "Instance j1k2l3 created on node-1 (127.0.0.1:25568)"
+      ]
+    }
+    ```
+  </Tab>
+</Tabs>
+
+| Status | Meaning |
+|--------|---------|
+| `200` | Command executed. `output` may be empty if the command produced no lines. |
+| `401` | Missing or invalid `Authorization` header. |
+
+<Tip>
+  For an interactive, bidirectional console experience without polling, connect to the [WebSocket console endpoint](/api-reference/websockets) at `WS /api/console`. The WebSocket lets you send commands and receive streaming output in real time.
+</Tip>

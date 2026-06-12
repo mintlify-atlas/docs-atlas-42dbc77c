@@ -1,0 +1,238 @@
+---
+title: "WebSocket Endpoints: Live Logs and Interactive Console"
+sidebarTitle: "WebSockets"
+description: "Connect to Universe's two WebSocket endpoints for real-time instance log streaming with 500ms polling and full bidirectional interactive console access."
+---
+
+Universe exposes two WebSocket endpoints alongside its REST API. Both use the same Bearer token authentication as HTTP endpoints — the token is provided in the `Authorization` header during the WebSocket upgrade handshake. Once connected, both endpoints use **text frames** exclusively: one log line or one output line per frame.
+
+<Note>
+  WebSocket connections automatically close when the client disconnects or when the underlying TCP connection drops. The server catches connection errors silently and does not attempt reconnection — that is the responsibility of the client.
+</Note>
+
+---
+
+## Authentication
+
+Both WebSocket endpoints require an API key with **ALL** permission. Pass the Bearer token as an `Authorization` header during the HTTP → WebSocket upgrade:
+
+```bash
+# Using websocat (https://github.com/vi/websocat)
+websocat -H "Authorization: Bearer YOUR_API_KEY" \
+  ws://localhost:8080/api/instances/a1b2c3/live-log
+
+# Using curl (WebSocket upgrade)
+curl --http1.1 \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Connection: Upgrade" \
+  -H "Upgrade: websocket" \
+  -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" \
+  -H "Sec-WebSocket-Version: 13" \
+  http://localhost:8080/api/instances/a1b2c3/live-log
+```
+
+---
+
+## WS /api/instances/{id}/live-log
+
+Streams live log output from a running instance. The server polls the runtime provider every **500 milliseconds** for new log lines and sends each new line as a separate text frame. This endpoint supports all runtimes: screen, tmux, Docker, and Kubernetes.
+
+**Authentication:** ALL permission required.
+
+**Path Parameters**
+
+<ParamField path="id" type="string" required>
+  The 6-character ID of the instance to stream logs from (e.g., `a1b2c3`).
+</ParamField>
+
+### How it works
+
+1. The server fetches the instance from the cluster state.
+2. It resolves the runtime provider that was used to start the instance.
+3. It enters a polling loop: every 500ms it calls `runtimeProvider.getLogs(id, 1000)`.
+4. Any new lines (lines beyond the last known count) are sent as individual text frames.
+5. The loop continues until the client closes the connection.
+
+### Message format
+
+Each WebSocket frame contains exactly one log line as plain text, without a trailing newline. Lines arrive in the order they appear in the instance's output.
+
+```
+[12:00:01] [Server thread/INFO]: Done (1.234s)! For help, type "help"
+```
+
+### Connection example
+
+<Tabs>
+  <Tab title="websocat">
+    ```bash
+    websocat -H "Authorization: Bearer YOUR_API_KEY" \
+      ws://localhost:8080/api/instances/a1b2c3/live-log
+    ```
+
+    Output (each line is one WebSocket text frame):
+
+    ```
+    [12:00:01] [Server thread/INFO]: Starting minecraft server version 1.21
+    [12:00:01] [Server thread/INFO]: Loading properties
+    [12:00:02] [Server thread/INFO]: Done (1.234s)! For help, type "help"
+    [12:00:05] [Server thread/INFO]: Player andyreckt joined the game
+    ```
+  </Tab>
+  <Tab title="JavaScript">
+    ```javascript
+    const ws = new WebSocket("ws://localhost:8080/api/instances/a1b2c3/live-log", [], {
+      headers: { "Authorization": "Bearer YOUR_API_KEY" }
+    });
+
+    ws.onmessage = (event) => {
+      console.log("[LOG]", event.data);
+    };
+
+    ws.onclose = (event) => {
+      console.log("Connection closed:", event.code, event.reason);
+    };
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    import asyncio
+    import websockets
+
+    async def stream_logs():
+        uri = "ws://localhost:8080/api/instances/a1b2c3/live-log"
+        headers = {"Authorization": "Bearer YOUR_API_KEY"}
+        async with websockets.connect(uri, additional_headers=headers) as ws:
+            async for message in ws:
+                print("[LOG]", message)
+
+    asyncio.run(stream_logs())
+    ```
+  </Tab>
+</Tabs>
+
+### Close behavior
+
+The server closes the WebSocket with a `CANNOT_ACCEPT` reason code if:
+- The `id` path parameter is missing.
+- No instance with the given ID exists in the cluster state.
+- No runtime provider is available to read logs.
+
+| Close code | Reason |
+|------------|--------|
+| `CANNOT_ACCEPT` | Instance not found, or runtime unavailable. |
+| Normal close | Client disconnected. |
+
+---
+
+## WS /api/console
+
+An interactive, bidirectional WebSocket console connected directly to the Universe master node's command system. Send any console command as a text frame and receive the output lines as individual text frames in return. This is the real-time equivalent of `POST /api/commands/execute`.
+
+<Warning>
+  The `/api/console` WebSocket is **only available on the master node**. If you connect to a wrapper node, the server immediately sends the message `"Console websocket is only available on the master node"` and closes the connection with `CANNOT_ACCEPT`.
+</Warning>
+
+**Authentication:** ALL permission required.
+
+### How it works
+
+1. The server verifies `config.isMasterNode`. Non-master nodes close immediately.
+2. The server creates a `WebSocketCommandSource` that routes `sendMessage` calls to outgoing WebSocket frames.
+3. For each incoming text frame, the server calls `commandProvider.execute(source, command)`.
+4. All output lines produced by the command are sent back as individual text frames.
+5. The loop continues until the client closes the connection or an error occurs.
+
+### Message format
+
+**Send (client → server):** A single text frame containing the full command string.
+
+```
+instance list
+```
+
+**Receive (server → client):** One text frame per output line. Multiple lines arrive as multiple frames.
+
+```
+ID       CONFIG    STATE    HOST        PORT   NODE
+a1b2c3   lobby     ONLINE   127.0.0.1   25565  node-1
+d4e5f6   lobby     ONLINE   127.0.0.1   25566  node-2
+```
+
+### Connection example
+
+<Tabs>
+  <Tab title="websocat (interactive)">
+    ```bash
+    websocat -H "Authorization: Bearer YOUR_API_KEY" \
+      ws://localhost:8080/api/console
+    ```
+
+    Type commands and press Enter. Output appears as individual lines:
+
+    ```
+    cluster status
+    Cluster: universe-cluster
+    Local Node: node-1 (master)
+    Members: 2
+    instance list
+    ID       CONFIG    STATE    HOST        PORT   NODE
+    a1b2c3   lobby     ONLINE   127.0.0.1   25565  node-1
+    ```
+  </Tab>
+  <Tab title="JavaScript">
+    ```javascript
+    const ws = new WebSocket("ws://localhost:8080/api/console", [], {
+      headers: { "Authorization": "Bearer YOUR_API_KEY" }
+    });
+
+    ws.onopen = () => {
+      // Send a command once connected
+      ws.send("cluster status");
+    };
+
+    ws.onmessage = (event) => {
+      console.log("[OUTPUT]", event.data);
+    };
+
+    ws.onclose = (event) => {
+      if (event.reason === "Not master node") {
+        console.error("This node is not the master — connect to the master instead.");
+      }
+    };
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    import asyncio
+    import websockets
+
+    async def interactive_console():
+        uri = "ws://localhost:8080/api/console"
+        headers = {"Authorization": "Bearer YOUR_API_KEY"}
+        async with websockets.connect(uri, additional_headers=headers) as ws:
+            # Send a command
+            await ws.send("instance list")
+            # Collect output until a timeout or known delimiter
+            try:
+                while True:
+                    line = await asyncio.wait_for(ws.recv(), timeout=2.0)
+                    print(line)
+            except asyncio.TimeoutError:
+                pass  # No more output within 2s
+
+    asyncio.run(interactive_console())
+    ```
+  </Tab>
+</Tabs>
+
+### Close behavior
+
+| Close code | Reason |
+|------------|--------|
+| `CANNOT_ACCEPT` (with reason `"Not master node"`) | Connected to a wrapper node, not the master. |
+| Normal close | Client disconnected. |
+
+<Tip>
+  Unlike `POST /api/commands/execute`, the console WebSocket does not guarantee a definitive end-of-output marker after each command. Commands that produce no output send zero frames. Build a timeout or use a known delimiter in your client to determine when a command's output is complete.
+</Tip>

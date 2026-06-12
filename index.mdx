@@ -1,20 +1,79 @@
 ---
-title: "Introduction"
-description: "Welcome to your project"
+title: "Universe: Distributed Instance Orchestrator"
+sidebarTitle: "Home"
+description: "Universe is a single-JAR cluster orchestrator for deploying and managing application instances across nodes with pluggable runtimes and a clean extension API."
 ---
 
-Write a short description of your product here. What it does, who it's for, and what they can accomplish with it.
+Universe is a distributed orchestrator that runs as a single fat JAR. Deploy one node as the **Master** (which exposes a REST API and routes tasks) and any number of nodes as **Wrappers** (which execute instances via Hazelcast). Runtimes are pluggable — run processes with `screen` or `tmux` out of the box, or extend to Docker and Kubernetes.
 
-<Tip>
-  Ready to make this your own? Start by editing this page. Update your `docs.json` file to customize your site. Then fill out the [Quickstart](/quickstart) page.
-</Tip>
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Get a Master node running and deploy your first instance in minutes.
+  </Card>
+  <Card title="Architecture" icon="diagram-project" href="/architecture">
+    Understand the Master/Wrapper topology and Hazelcast task dispatch.
+  </Card>
+  <Card title="Configuration" icon="gear" href="/configuration/node-config">
+    Configure node identity, cluster settings, and instance definitions.
+  </Card>
+  <Card title="API Reference" icon="code" href="/api-reference/overview">
+    Explore the full REST and WebSocket API with request/response schemas.
+  </Card>
+</CardGroup>
 
-<Card title="Quickstart" icon="rocket" href="/quickstart">
-  This card links to the quickstart page in your project.
-</Card>
-<Card title="Components" icon="puzzle-piece" href="https://mintlify.com/docs/components">
-  Add cards, callouts, steps, tabs, and more to design and structure your pages.
-</Card>
-<Card title="Settings" icon="gear" href="https://mintlify.com/docs/organize/settings">
-  Set your site name, branding, and navigation in the `docs.json` file.
-</Card>
+## Key Features
+
+<CardGroup cols={3}>
+  <Card title="Single JAR" icon="box">
+    Master and Wrapper run from the same artifact. Node role is determined by `config.json`.
+  </Card>
+  <Card title="Pluggable Runtimes" icon="plug">
+    Built-in screen and tmux support. Docker and Kubernetes via drop-in extension JARs.
+  </Card>
+  <Card title="Template System" icon="copy">
+    File-tree templates with dynamic variable replacement at instance creation time.
+  </Card>
+  <Card title="REST API" icon="globe">
+    Full Ktor-based REST API with bearer authentication, rate limiting, and WebSocket streams.
+  </Card>
+  <Card title="Extension API" icon="puzzle-piece">
+    Register custom runtimes, storage backends, metrics exporters, and more.
+  </Card>
+  <Card title="Minecraft-Ready" icon="cube">
+    First-class Paper, Spigot, Velocity, BungeeCord, and Folia plugin support.
+  </Card>
+</CardGroup>
+
+## How It Works
+
+<Steps>
+  <Step title="Run the JAR">
+    Launch `universe-loader-*.jar` on each node. The first run generates `config.json` and directory structure.
+  </Step>
+  <Step title="Configure the cluster">
+    Set `isMasterNode: true` on one node and point Wrapper nodes at the Master's Hazelcast address.
+  </Step>
+  <Step title="Create templates and configurations">
+    Place file trees in `./templates/<group>/<name>/` and define instance configurations in `./configuration/`.
+  </Step>
+  <Step title="Deploy instances">
+    Use the REST API, console commands, or extensions like the Discord bot to deploy and manage instances.
+  </Step>
+</Steps>
+
+## Explore by Topic
+
+<CardGroup cols={2}>
+  <Card title="Runtimes" icon="server" href="/runtimes/overview">
+    Screen, tmux, Docker, and Kubernetes runtime configuration and setup guides.
+  </Card>
+  <Card title="Extensions" icon="puzzle-piece" href="/extensions/overview">
+    S3 storage, Tailscale networking, GitOps sync, ArgoCD, Discord, and metrics integrations.
+  </Card>
+  <Card title="Minecraft Integration" icon="cube" href="/minecraft/overview">
+    Paper, Spigot, Velocity, BungeeCord, and Folia plugins with auto-registration.
+  </Card>
+  <Card title="Operations" icon="terminal" href="/operations/console-commands">
+    Console commands, networking, logging, and API key security.
+  </Card>
+</CardGroup>

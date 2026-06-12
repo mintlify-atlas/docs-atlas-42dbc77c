@@ -1,0 +1,194 @@
+---
+title: "Database Extensions: PostgreSQL, MongoDB, and Redis"
+sidebarTitle: "Databases"
+description: "Extension JARs that add PostgreSQL, MongoDB, and Redis as selectable DatabaseProvider backends alongside Universe's built-in H2 and MySQL providers."
+---
+
+Universe ships with H2 (embedded, zero setup) and MySQL as built-in database providers. The three database extension JARs extend this set by registering additional `DatabaseProvider` implementations at runtime. Each extension activates only when its provider key is set in `./database.json` — installing the JAR alone does nothing.
+
+All three extensions follow the same pattern: on `onLoad()` they inject `DatabaseRegistry` and call `register()` with a new provider instance. The core selects the active provider by matching the `provider` field in `database.json` against all registered keys at startup.
+
+<Tip>
+  See the [Database Configuration](/configuration/database) reference for the full `database.json` schema and built-in provider options.
+</Tip>
+
+## Provider Summary
+
+| Provider | Key | Extension JAR | Built-in? |
+|----------|-----|---------------|-----------|
+| H2 (embedded) | `h2` | — | Yes |
+| MySQL | `mysql` | — | Yes |
+| PostgreSQL | `postgres` | `extension-db-postgres` | No |
+| MongoDB | `mongodb` | `extension-db-mongodb` | No |
+| Redis | `redis` | `extension-db-redis` | No |
+
+<Tabs>
+  <Tab title="PostgreSQL">
+    PostgreSQL is a production-grade relational database well-suited for multi-node Universe clusters that require concurrent writes and advanced querying.
+
+    **Installation:** Place `extension-db-postgres.jar` in `./extensions/` and set `"provider": "postgres"` in `./database.json`.
+
+    **`./database.json`:**
+
+    ```json
+    {
+      "provider": "postgres",
+      "host": "localhost",
+      "port": 5432,
+      "database": "universe",
+      "username": "universe",
+      "password": "secret"
+    }
+    ```
+
+    | Field | Description |
+    |-------|-------------|
+    | `provider` | Must be `"postgres"` to activate this extension |
+    | `host` | PostgreSQL server hostname or IP |
+    | `port` | PostgreSQL port (default: `5432`) |
+    | `database` | Database name |
+    | `username` | Database user |
+    | `password` | Database password |
+
+    **Docker Compose example:**
+
+    ```yaml
+    services:
+      universe:
+        image: git.lunarlabs.dev/scala/universe:latest
+        volumes:
+          - ./data:/data
+        depends_on:
+          - postgres
+
+      postgres:
+        image: postgres:16-alpine
+        environment:
+          POSTGRES_DB: universe
+          POSTGRES_USER: universe
+          POSTGRES_PASSWORD: secret
+        volumes:
+          - postgres-data:/var/lib/postgresql/data
+
+    volumes:
+      postgres-data:
+    ```
+
+    The extension uses jOOQ with the PostgreSQL dialect for all SQL operations, giving you the full range of PostgreSQL-specific features when implementing custom `DatabaseProvider` subclasses.
+  </Tab>
+  <Tab title="MongoDB">
+    MongoDB is a document-oriented database that stores Universe data as BSON documents. It is a good fit if you prefer schema flexibility or already operate MongoDB in your infrastructure.
+
+    **Installation:** Place `extension-db-mongodb.jar` in `./extensions/` and set `"provider": "mongodb"` in `./database.json`.
+
+    **`./database.json`:**
+
+    ```json
+    {
+      "provider": "mongodb",
+      "host": "localhost",
+      "port": 27017,
+      "database": "universe",
+      "username": "universe",
+      "password": "secret"
+    }
+    ```
+
+    | Field | Description |
+    |-------|-------------|
+    | `provider` | Must be `"mongodb"` to activate this extension |
+    | `host` | MongoDB server hostname or IP |
+    | `port` | MongoDB port (default: `27017`) |
+    | `database` | Database name |
+    | `username` | MongoDB user (SCRAM authentication). Leave empty for unauthenticated access |
+    | `password` | MongoDB password. Leave empty for unauthenticated access |
+
+    **Docker Compose example:**
+
+    ```yaml
+    services:
+      universe:
+        image: git.lunarlabs.dev/scala/universe:latest
+        volumes:
+          - ./data:/data
+        depends_on:
+          - mongodb
+
+      mongodb:
+        image: mongo:7
+        environment:
+          MONGO_INITDB_DATABASE: universe
+          MONGO_INITDB_ROOT_USERNAME: universe
+          MONGO_INITDB_ROOT_PASSWORD: secret
+        volumes:
+          - mongo-data:/data/db
+
+    volumes:
+      mongo-data:
+    ```
+
+    If both `username` and `password` are empty strings, the extension connects without authentication — appropriate for local development or trusted internal networks.
+  </Tab>
+  <Tab title="Redis">
+    Redis is an in-memory data structure store used for fast, ephemeral data access. Use it if you need sub-millisecond lookups or are already running Redis for caching or messaging in your stack.
+
+    **Installation:** Place `extension-db-redis.jar` in `./extensions/` and set `"provider": "redis"` in `./database.json`.
+
+    **`./database.json`:**
+
+    ```json
+    {
+      "provider": "redis",
+      "host": "localhost",
+      "port": 6379,
+      "username": "",
+      "password": "secret"
+    }
+    ```
+
+    | Field | Description |
+    |-------|-------------|
+    | `provider` | Must be `"redis"` to activate this extension |
+    | `host` | Redis server hostname or IP |
+    | `port` | Redis port (default: `6379`) |
+    | `username` | Redis ACL username (Redis 6+). Leave empty if not using ACLs |
+    | `password` | Redis AUTH password. Leave empty for unauthenticated instances |
+
+    <Note>
+      The `database` field in `database.json` is ignored by the Redis provider. The extension uses Lettuce as the Redis client for non-blocking, reactive operations.
+    </Note>
+
+    **Docker Compose example:**
+
+    ```yaml
+    services:
+      universe:
+        image: git.lunarlabs.dev/scala/universe:latest
+        volumes:
+          - ./data:/data
+        depends_on:
+          - redis
+
+      redis:
+        image: redis:7-alpine
+        volumes:
+          - redis-data:/data
+
+    volumes:
+      redis-data:
+    ```
+  </Tab>
+</Tabs>
+
+## Switching Providers
+
+To switch from one database provider to another:
+
+1. Stop Universe.
+2. Place the new extension JAR in `./extensions/` (if not already present).
+3. Update the `"provider"` field in `./database.json` to the new provider key.
+4. Start Universe. The new provider's `connect()` method is called during startup; the old provider is never loaded.
+
+<Warning>
+  Switching database backends does not migrate existing data. Universe will start with an empty database under the new provider. Back up your data before switching.
+</Warning>

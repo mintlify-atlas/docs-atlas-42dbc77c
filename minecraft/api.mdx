@@ -1,0 +1,315 @@
+---
+title: "Universe Plugin API for Minecraft Developers"
+sidebarTitle: "Plugin API"
+description: "The JVM-8-compatible :minecraft:api module exposes UniverseAPI, InstanceManager, and CompletableFuture-based methods for cluster control from any Bukkit plugin."
+---
+
+The `:minecraft:api` module is a lightweight, JVM-8-compatible library that lets any Minecraft plugin — yours or a third party's — interact with the Universe cluster at runtime. It contains no external dependencies and is intentionally **not** relocated inside Universe's own shadow JARs, so the same classes are available on the classpath regardless of which Universe plugin flavor is loaded on the server.
+
+You do not need to build against the specific Paper, Spigot, or Folia plugin. You depend only on `:minecraft:api`, call `Universe.getAPI()`, and let the loaded platform plugin supply the implementation.
+
+## Adding the Dependency
+
+Add `:minecraft:api` to your plugin's build script using `implementation` (not `compileOnly`) so the API classes are available at compile time and correctly resolved against the classes Universe places on the runtime classpath.
+
+<CodeGroup>
+```kotlin build.gradle.kts
+dependencies {
+    implementation("gg.scala.universe:minecraft-api:<version>")
+}
+```
+```groovy build.gradle
+dependencies {
+    implementation 'gg.scala.universe:minecraft-api:<version>'
+}
+```
+</CodeGroup>
+
+<Note>
+  `Universe.getAPI()` returns the platform-specific implementation registered by whichever Universe plugin is loaded — `ModernUniverseAPIImpl`, `LegacyUniverseAPIImpl`, or `FoliaUniverseAPIImpl`. Your code always depends on the `UniverseAPI` interface; you never reference the implementation classes directly.
+</Note>
+
+## Registering with Universe
+
+The `Universe` object is the single static entry point. The platform plugin calls `Universe.register(api)` in `onEnable()` and `Universe.unregister()` in `onDisable()`. If you are writing a **dependent plugin** — one that uses the API but does not provide it — you only need to call `Universe.getAPI()`.
+
+```kotlin
+// In your plugin's onEnable() — only needed if you are providing an implementation
+Universe.register(myApiImpl)
+
+// In your plugin's onDisable()
+Universe.unregister()
+```
+
+For the common case where you are consuming the API, just guard with a null check:
+
+```kotlin
+val api = Universe.getAPI() ?: run {
+    logger.warning("Universe is not loaded — skipping cluster features")
+    return
+}
+```
+
+You can also check availability without obtaining the instance:
+
+```kotlin
+if (!Universe.isAvailable()) {
+    logger.warning("Universe API is not available on this server")
+    return
+}
+```
+
+## `UniverseAPI` Interface
+
+`UniverseAPI` is the root interface. It exposes metadata about the current server's connection and provides access to the three manager interfaces.
+
+```kotlin
+interface UniverseAPI {
+
+    /** The URL of the Universe Master REST API. */
+    fun getMasterUrl(): String
+
+    /** The instance ID of this server, if running as a Universe instance. */
+    fun getInstanceId(): String?
+
+    /** Whether this plugin is currently connected to the Universe master. */
+    fun isConnected(): Boolean
+
+    /** Manager for instance lifecycle operations (start, stop, execute commands). */
+    fun getInstanceManager(): InstanceManager
+
+    /** Manager for configuration operations (list, get, create configurations). */
+    fun getConfigurationManager(): ConfigurationManager
+
+    /** Manager for template operations (list, sync templates). */
+    fun getTemplateManager(): TemplateManager
+}
+```
+
+## Manager Interfaces
+
+<Accordion title="InstanceManager — lifecycle and querying">
+
+`InstanceManager` is the most commonly used manager. All methods communicate with the Universe Master via REST and return `CompletableFuture` for non-blocking use.
+
+```kotlin
+interface InstanceManager {
+
+    /** Start a new instance from a named configuration. Returns the new instance ID. */
+    fun startInstance(configurationName: String): CompletableFuture<String>
+
+    /** Start a new instance from a full Configuration object. Returns the new instance ID. */
+    fun startInstance(configuration: Configuration): CompletableFuture<String>
+
+    /** Stop an instance by ID. */
+    fun stopInstance(instanceId: String): CompletableFuture<Void>
+
+    /** Send a console command to an instance's stdin. */
+    fun executeCommand(instanceId: String, command: String): CompletableFuture<Void>
+
+    /** Get a single instance by ID. Returns Optional.empty() if not found. */
+    fun getInstance(instanceId: String): CompletableFuture<Optional<InstanceInfo>>
+
+    /** List all instances in the cluster. */
+    fun getInstances(): CompletableFuture<List<InstanceInfo>>
+
+    /** List instances filtered by state. */
+    fun getInstancesByState(state: InstanceState): CompletableFuture<List<InstanceInfo>>
+
+    /** Get the current state of an instance. Returns Optional.empty() if not found. */
+    fun getInstanceState(instanceId: String): CompletableFuture<Optional<InstanceState>>
+
+    /**
+     * Report this server's own state to the Master.
+     * Used internally by the platform plugin; generally not needed externally.
+     */
+    fun reportState(state: InstanceState): CompletableFuture<Void>
+}
+```
+</Accordion>
+
+<Accordion title="ConfigurationManager — cluster configurations">
+
+`ConfigurationManager` lets you list, read, create, and delete instance configurations stored in the Master.
+
+```kotlin
+interface ConfigurationManager {
+
+    /** List all configurations. */
+    fun getConfigurations(): CompletableFuture<List<Configuration>>
+
+    /** Get a configuration by name. Returns null if not found. */
+    fun getConfiguration(name: String): CompletableFuture<Configuration?>
+
+    /** Create or update a configuration. */
+    fun saveConfiguration(configuration: Configuration): CompletableFuture<Void>
+
+    /** Delete a configuration by name. */
+    fun deleteConfiguration(name: String): CompletableFuture<Void>
+}
+```
+</Accordion>
+
+<Accordion title="TemplateManager — template listing and sync">
+
+`TemplateManager` provides read access to templates and lets you trigger a cluster-wide sync.
+
+```kotlin
+interface TemplateManager {
+
+    /** List all templates. */
+    fun getTemplates(): CompletableFuture<List<Template>>
+
+    /** List templates in a specific group. */
+    fun getTemplatesByGroup(group: String): CompletableFuture<List<Template>>
+
+    /** Trigger a template sync to all nodes. */
+    fun syncTemplates(): CompletableFuture<Void>
+}
+```
+</Accordion>
+
+## `InstanceInfo` Data Class
+
+`InstanceInfo` is returned by every instance query. All fields are directly accessible in Kotlin; Java callers use generated getters.
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | `String` | Unique 6-character instance ID |
+| `configurationName` | `String` | Name of the configuration this instance was created from |
+| `wrapperNodeId` | `String` | ID of the Wrapper node running this instance |
+| `hostAddress` | `String` | Advertised host address (IP or DNS name) |
+| `allocatedPort` | `Int` | Port assigned to this instance |
+| `state` | `String` | Raw state string — use `getStateEnum()` for a typed value |
+| `lastHeartbeat` | `Long` | Epoch milliseconds of the last heartbeat report |
+| `processPid` | `Long?` | OS PID of the instance process, if available |
+| `allocatedRamMB` | `Int` | RAM allocated to the instance in megabytes |
+| `allocatedCpu` | `Int` | CPU shares allocated to the instance |
+| `runtime` | `String` | Runtime name (`screen`, `tmux`, `docker`, etc.) |
+| `players` | `Int` | Current online player count (from heartbeat) |
+| `maxPlayers` | `Int` | Configured maximum players (from heartbeat) |
+
+`InstanceInfo` also provides three convenience members:
+
+```kotlin
+// Typed state enum
+fun getStateEnum(): InstanceState
+
+// Full "host:port" address string
+fun getAddress(): String
+
+// True when state == "ONLINE"
+fun isOnline(): Boolean
+```
+
+A fluent `InstanceInfo.Builder` is available for constructing instances in tests:
+
+```kotlin
+val info = InstanceInfo.Builder()
+    .id("abc123")
+    .configurationName("lobby")
+    .hostAddress("10.0.0.5")
+    .allocatedPort(25565)
+    .state(InstanceState.ONLINE)
+    .players(12)
+    .maxPlayers(100)
+    .build()
+```
+
+## `InstanceState` Enum
+
+```kotlin
+enum class InstanceState {
+    CREATING,  // Instance has been requested and is being set up
+    ONLINE,    // Instance is running and heartbeating
+    OFFLINE,   // Instance reported clean shutdown
+    STOPPED    // Instance was stopped or terminated abnormally
+}
+```
+
+## Full Usage Example
+
+The example below shows a typical Kotlin plugin that uses the API to list all online lobby servers, start a new one if fewer than two exist, and react to state changes.
+
+```kotlin
+import gg.scala.universe.minecraft.api.Universe
+import gg.scala.universe.minecraft.api.InstanceState
+import org.bukkit.plugin.java.JavaPlugin
+
+class MyPlugin : JavaPlugin() {
+
+    override fun onEnable() {
+        val api = Universe.getAPI() ?: run {
+            logger.warning("Universe is not available — skipping cluster logic")
+            return
+        }
+
+        logger.info("Connected to Universe Master at ${api.getMasterUrl()}")
+        logger.info("This server's instance ID: ${api.getInstanceId()}")
+
+        // List all ONLINE instances
+        api.instanceManager
+            .getInstancesByState(InstanceState.ONLINE)
+            .thenAccept { onlineInstances ->
+                logger.info("Online instances: ${onlineInstances.size}")
+                onlineInstances.forEach { instance ->
+                    logger.info("  ${instance.id} @ ${instance.getAddress()} — ${instance.players}/${instance.maxPlayers} players")
+                }
+            }
+
+        // Get a specific instance by ID
+        api.instanceManager
+            .getInstance("abc123")
+            .thenAccept { optional ->
+                if (optional.isPresent) {
+                    val info = optional.get()
+                    logger.info("Instance ${info.id} is ${info.getStateEnum()} (runtime: ${info.runtime})")
+                } else {
+                    logger.info("Instance abc123 not found")
+                }
+            }
+
+        // Start a new lobby instance if fewer than two exist
+        api.instanceManager
+            .getInstances()
+            .thenAccept { all ->
+                val lobbies = all.filter { it.configurationName == "lobby" && it.isOnline() }
+                if (lobbies.size < 2) {
+                    api.instanceManager
+                        .startInstance("lobby")
+                        .thenAccept { newId ->
+                            logger.info("Started new lobby instance: $newId")
+                        }
+                }
+            }
+
+        // Trigger a template sync across all nodes
+        api.templateManager
+            .syncTemplates()
+            .thenRun { logger.info("Template sync triggered") }
+    }
+
+    override fun onDisable() {
+        Universe.unregister()
+    }
+}
+```
+
+<Note>
+  `Universe.getAPI()` always returns `null` if the Universe plugin is not loaded or has not finished enabling. Guard every call with a null check or use `Universe.isAvailable()` before interacting with the API. If your plugin declares `depend: [Universe]` in `plugin.yml`, the Universe plugin is guaranteed to have called `Universe.register(api)` before your `onEnable()` runs.
+</Note>
+
+## Java Usage
+
+All `UniverseAPI` methods are annotated with `@JvmStatic` or follow Java naming conventions (`getInstanceManager()` etc.) so Java plugins can use the API without any Kotlin dependency.
+
+```java
+UniverseAPI api = Universe.getAPI();
+if (api == null) return;
+
+api.getInstanceManager().getInstances().thenAccept(instances -> {
+    for (InstanceInfo info : instances) {
+        System.out.println(info.getId() + " -> " + info.getAddress());
+    }
+});
+```

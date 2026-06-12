@@ -1,0 +1,163 @@
+---
+title: "Server Plugins: Paper, Spigot, and Folia Integration"
+sidebarTitle: "Server Plugins"
+description: "Drop-in Universe plugins for Paper 1.21.11+, Spigot 1.8.8, and Folia 1.21+ that register instances, report heartbeats, and expose /universe commands."
+---
+
+Universe's server plugins are placed in a game server's `plugins/` directory just like any other Bukkit plugin. On startup each plugin registers the server as an `ONLINE` instance with the Universe Master, begins a recurring heartbeat, and registers the `/universe` command set. On shutdown the plugin reports `OFFLINE` state before the process exits.
+
+Every flavor — Modern Paper, Legacy Spigot, and Folia — shares the same configuration file layout and command surface. The only differences are the platform APIs used internally and the chat formatting library (MiniMessage on modern platforms, legacy `&` codes on Spigot and BungeeCord).
+
+## What Server Plugins Do
+
+When a server plugin loads it performs four actions:
+
+1. **Resolves the Master URL** from the system property, environment variable, `config.yml`, or the default `http://localhost:6000` — in that order.
+2. **Resolves the instance ID** from `universe.instance.id` / `UNIVERSE_INSTANCE_ID` / `instance-id` in `config.yml`. Without an instance ID the plugin logs a warning and skips registration.
+3. **Reports `ONLINE` state** to the Master REST API at `PUT /api/instances/{id}/state`.
+4. **Starts a heartbeat task** on the configured interval (default 30 seconds) that sends current player count, max players, and TPS to the Master.
+
+<Warning>
+  If no instance ID is configured the plugin will log `No Universe instance ID configured` and will not register with the Master. Universe typically injects `UNIVERSE_INSTANCE_ID` automatically when it starts the server process — manual configuration is only needed for servers you manage yourself.
+</Warning>
+
+## Installation and Configuration
+
+<Tabs>
+  <Tab title="Modern Paper (1.21.11+)">
+    The `minecraft-modern` plugin targets Paper 1.21.11+ and uses the [Incendo Cloud](https://github.com/incendo/cloud) annotation parser for commands and MiniMessage for all chat output.
+
+    <Steps>
+      <Step title="Build or download the JAR">
+        ```bash
+        ./gradlew :minecraft:minecraft-modern:build
+        # Output: .built/minecraft-modern-<version>-all.jar
+        ```
+      </Step>
+      <Step title="Place the JAR in plugins/">
+        Copy `minecraft-modern-<version>-all.jar` into your Paper server's `plugins/` directory.
+      </Step>
+      <Step title="Configure the plugin">
+        Start the server once to generate `plugins/Universe/config.yml`, then edit it:
+
+        ```yaml
+        # Universe Modern Plugin Configuration
+        # Instance ID and master URL can also be set via:
+        #   - System property: -Duniverse.instance.id=abc123 -Duniverse.master.url=http://localhost:6000
+        #   - Environment variable: UNIVERSE_INSTANCE_ID=abc123 UNIVERSE_MASTER_URL=http://localhost:6000
+
+        # Universe Master REST API URL
+        master-url: "http://localhost:6000"
+
+        # Instance ID (auto-detected from env/property if not set)
+        # instance-id: ""
+
+        # API Key for Bearer authentication (optional)
+        # api-key: ""
+
+        # Heartbeat interval in seconds
+        heartbeat-interval-seconds: 30
+        ```
+      </Step>
+      <Step title="Restart the server">
+        The plugin reports `ONLINE` state on startup and `OFFLINE` on shutdown automatically.
+      </Step>
+    </Steps>
+  </Tab>
+  <Tab title="Legacy Spigot (1.8.8)">
+    The `minecraft-legacy` plugin targets Spigot 1.8.8 and uses `LegacyPaperCommandManager` with `ChatColor.translateAlternateColorCodes` for `&`-prefixed color codes.
+
+    <Steps>
+      <Step title="Build or download the JAR">
+        ```bash
+        ./gradlew :minecraft:minecraft-legacy:build
+        # Output: .built/minecraft-legacy-<version>-all.jar
+        ```
+      </Step>
+      <Step title="Place the JAR in plugins/">
+        Copy `minecraft-legacy-<version>-all.jar` into your Spigot server's `plugins/` directory.
+      </Step>
+      <Step title="Configure the plugin">
+        The generated `plugins/Universe/config.yml` uses the same keys as the modern variant:
+
+        ```yaml
+        master-url: "http://localhost:6000"
+        # instance-id: ""
+        # api-key: ""
+        heartbeat-interval-seconds: 30
+        ```
+      </Step>
+      <Step title="Restart the server">
+        Legacy color codes (`&a`, `&c`, etc.) are used in all command responses.
+      </Step>
+    </Steps>
+  </Tab>
+  <Tab title="Folia (1.21+)">
+    The `minecraft-folia` plugin targets Folia 1.21+ and uses `Bukkit.getAsyncScheduler().runAtFixedRate()` for the heartbeat task instead of the standard Bukkit scheduler.
+
+    <Steps>
+      <Step title="Build or download the JAR">
+        ```bash
+        ./gradlew :minecraft:minecraft-folia:build
+        # Output: .built/minecraft-folia-<version>-all.jar
+        ```
+      </Step>
+      <Step title="Place the JAR in plugins/">
+        Copy `minecraft-folia-<version>-all.jar` into your Folia server's `plugins/` directory.
+      </Step>
+      <Step title="Configure the plugin">
+        Identical config structure to the modern variant:
+
+        ```yaml
+        master-url: "http://localhost:6000"
+        # instance-id: ""
+        # api-key: ""
+        heartbeat-interval-seconds: 30
+        ```
+      </Step>
+      <Step title="Restart the server">
+        The plugin logs `Universe plugin enabled for instance <id> (Folia)` on success.
+      </Step>
+    </Steps>
+
+    <Note>
+      Folia uses regionized tick scheduling. The heartbeat task is submitted to `Bukkit.getAsyncScheduler()` rather than the legacy `runTaskTimerAsynchronously` API, so it is safe across all Folia region threads. Commands use the same Cloud annotation parser and MiniMessage formatting as the modern Paper plugin.
+    </Note>
+  </Tab>
+</Tabs>
+
+## config.yml Reference
+
+The following table describes every key in `plugins/Universe/config.yml`. All values can be overridden by the corresponding system property or environment variable listed alongside them.
+
+| Key | Default | System Property | Env Var | Description |
+|---|---|---|---|---|
+| `master-url` | `http://localhost:6000` | `universe.master.url` | `UNIVERSE_MASTER_URL` | Base URL of the Universe Master REST API |
+| `instance-id` | *(none)* | `universe.instance.id` | `UNIVERSE_INSTANCE_ID` | ID of this server instance registered in Universe |
+| `api-key` | *(none)* | `universe.api.key` | `UNIVERSE_API_KEY` | Optional Bearer token for Master API authentication |
+| `heartbeat-interval-seconds` | `30` | — | — | How often (in seconds) to report player count and TPS |
+
+## Heartbeat Reporting
+
+Every interval the plugin sends a `PUT /api/instances/{id}/state` request to the Master containing:
+
+- **Players** — current online player count (`server.onlinePlayers.size`)
+- **Max players** — configured server max players
+- **TPS** — server ticks-per-second (reported in the `/universe tps` command and included in heartbeat data)
+- **Last heartbeat** — epoch milliseconds of the last successful report
+
+The Master uses `lastHeartbeat` to detect stale instances. If a server crashes without a clean shutdown the Master will eventually mark it `OFFLINE` when the heartbeat stops arriving.
+
+## `/universe` Commands
+
+All three server plugins register the same top-level `/universe` command. Each subcommand is available to operators by default.
+
+| Subcommand | Description |
+|---|---|
+| `/universe info` | Displays the instance ID, Master URL, connection status, and current state |
+| `/universe players` | Shows the current player count and the configured maximum |
+| `/universe tps` | Reports the current server TPS (ticks per second) |
+
+<Tip>
+  The `/universe info` command is the fastest way to confirm that a server has successfully registered with the Master. A connected server shows the instance ID and `ONLINE` state; a misconfigured server shows `not connected`.
+</Tip>

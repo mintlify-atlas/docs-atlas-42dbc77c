@@ -1,0 +1,468 @@
+---
+title: "Kubernetes Runtime: Pod-Based Instance Execution"
+sidebarTitle: "Kubernetes"
+description: "Spawn instances as Kubernetes Pods on local or cloud clusters. Covers kubeconfig mounting, S3 init containers, per-instance Services, and NodePort access."
+---
+
+The Kubernetes runtime extension allows Universe to spawn instances as **Kubernetes Pods** instead of local processes or Docker containers. It supports both local development clusters (minikube, Docker Desktop, kind) and full cloud providers (EKS, GKE, AKS), with automatic URL rewriting so a containerized Universe can reach a local cluster's API server without manual kubeconfig edits.
+
+Each instance maps to one Pod. The extension manages the full Pod lifecycle — creation, readiness polling, stdin command dispatch via `kubectl exec`, log streaming, and deletion on stop. Optionally, a per-instance Kubernetes Service is created alongside each Pod to provide stable in-cluster DNS resolution.
+
+## Two Operating Modes
+
+The extension's behaviour changes depending on whether `hostDataPath` is set:
+
+| | Local Mode | Cloud Mode |
+|--|------------|------------|
+| **When to use** | minikube, Docker Desktop, kind — cluster nodes share the host filesystem | EKS, GKE, AKS — cluster nodes are separate VMs |
+| **`hostDataPath`** | Required (e.g. `/opt/universe/data`) | Omit or set to `null` |
+| **Volume type** | `hostPath` — Pod sees template files via host filesystem mount | `emptyDir` — Pod starts with an empty working directory |
+| **Template delivery** | Universe copies template locally; Pod reads via `hostPath` | Use S3 init containers (recommended) or a shared PVC |
+| **S3 init containers** | Not needed | Auto-generated when `s3TemplateInit: true` |
+
+## Setup
+
+<Steps>
+  <Step title="Place the extension JAR">
+    Copy `runtime-k8s-<version>.jar` into the `./extensions/` directory on the Universe data volume:
+
+    ```text
+    ./extensions/
+      runtime-k8s-0.0.1.jar
+    ```
+  </Step>
+
+  <Step title="Mount the kubeconfig file">
+    Universe needs cluster credentials. Mount your local kubeconfig read-only into the container:
+
+    ```yaml
+    services:
+      universe:
+        image: git.lunarlabs.dev/scala/universe:latest
+        ports:
+          - "127.0.0.1:6000:6000"
+          - "127.0.0.1:7000:7000"
+        volumes:
+          - ./data:/data
+          - /var/run/docker.sock:/var/run/docker.sock
+          # REQUIRED: Kubeconfig for cluster authentication
+          - ~/.kube/config:/root/.kube/config:ro
+        environment:
+          - KUBECONFIG=/root/.kube/config
+        tty: true
+        stdin_open: true
+        restart: unless-stopped
+    ```
+
+    The Fabric8 Kubernetes client reads credentials, CA certificates, and the API server URL from this file, exactly as `kubectl` does on your host machine.
+  </Step>
+
+  <Step title="Add extra_hosts on Linux">
+    Docker Desktop on Mac and Windows automatically provides `host.docker.internal`. On Linux Docker you must add it manually:
+
+    ```yaml
+    services:
+      universe:
+        # ... other config ...
+        extra_hosts:
+          - "host.docker.internal:host-gateway"
+    ```
+
+    Universe auto-detects when it runs inside a Docker container and rewrites any `127.0.0.1` or `localhost` API server URL in the kubeconfig to `host.docker.internal`, so the container can reach the host's Kubernetes API server without any manual kubeconfig edits.
+  </Step>
+
+  <Step title="Set the KUBECONFIG environment variable">
+    ```yaml
+    environment:
+      - KUBECONFIG=/root/.kube/config
+    ```
+
+    This tells the Fabric8 client where to find the kubeconfig file inside the container.
+  </Step>
+
+  <Step title="Create the extension config file">
+    Create `./extensions/k8s/config.json`. The minimal required fields are:
+
+    ```json
+    {
+      "factoryName": "kube",
+      "namespace": "default",
+      "image": "azul-zulu:25-jdk-alpine",
+      "hostDataPath": "/opt/universe/data",
+      "timeoutSeconds": 30
+    }
+    ```
+
+    For cloud mode (EKS/GKE/AKS), omit `hostDataPath`:
+
+    ```json
+    {
+      "factoryName": "kube",
+      "namespace": "default",
+      "image": "azul-zulu:25-jdk-alpine",
+      "timeoutSeconds": 30
+    }
+    ```
+  </Step>
+
+  <Step title="Set runtime in instance configuration">
+    Edit `./configuration/default.json` and set `"runtime": "kube"`:
+
+    ```json
+    {
+      "name": "default",
+      "runtime": "kube",
+      "command": "java -jar server.jar",
+      "availablePorts": { "min": 25565, "max": 25570 },
+      "minimumServiceCount": 1
+    }
+    ```
+
+    Reload: `config reload` or `POST /api/node/reload`.
+  </Step>
+</Steps>
+
+## Full Configuration Schema
+
+All fields in `./extensions/k8s/config.json`:
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `factoryName` | string | `"kube"` | Runtime key used in instance configs (`"runtime": "kube"`) |
+| `namespace` | string | `"default"` | Kubernetes namespace where Pods are created |
+| `image` | string | `"azul-zulu:25-jdk-alpine"` | Container image for instance Pods |
+| `imagePullPolicy` | string | `"IfNotPresent"` | K8s image pull policy (`Always`, `IfNotPresent`, `Never`) |
+| `workingDir` | string | `"/app"` | Working directory inside the Pod |
+| `restartPolicy` | string | `"Never"` | K8s Pod restart policy (`Always`, `OnFailure`, `Never`) |
+| `serviceAccount` | string | `null` | K8s ServiceAccount name assigned to each Pod |
+| `nodeSelector` | object | `{}` | Node selector labels (e.g. `{"disktype": "ssd"}`) |
+| `tolerations` | array | `[]` | Toleration rules for tainted nodes |
+| `env` | object | `{}` | Environment variables injected into every Pod |
+| `labels` | object | `{}` | Extra labels applied to Pod metadata |
+| `annotations` | object | `{}` | Extra annotations applied to Pod metadata |
+| `volumes` | array | `[]` | Additional K8s volumes (hostPath, emptyDir, ConfigMap, Secret, PVC) |
+| `volumeMounts` | array | `[]` | Additional volume mounts inside the container |
+| `kubeConfigPath` | string | `null` | Path inside the container to the kubeconfig file |
+| `masterUrl` | string | `null` | Override the Kubernetes API server URL (rarely needed) |
+| `timeoutSeconds` | int | `30` | Seconds to wait for a Pod to reach `Running` state |
+| `hostDataPath` | string | `null` | Host path mapped to the Universe data directory. Set for local mode; omit for cloud mode |
+| `s3TemplateInit` | boolean | `true` | Auto-generate S3 init containers in cloud mode |
+| `s3InitImage` | string | `"amazon/aws-cli:latest"` | Image for S3 init containers (must provide `aws` CLI and `unzip`) |
+| `s3Bucket` | string | `null` | Override S3 bucket. If `null`, reads from the S3 extension config |
+| `s3Prefix` | string | `null` | Override S3 key prefix. If `null`, uses the S3 extension's configured prefix |
+| `service` | object | see below | Per-instance Kubernetes Service configuration |
+
+### volumes Array Items
+
+```json
+{
+  "name": "my-volume",
+  "hostPath": "/host/path",
+  "emptyDir": true,
+  "configMapName": "my-config",
+  "secretName": "my-secret",
+  "claimName": "my-pvc"
+}
+```
+
+Exactly one of `hostPath`, `emptyDir`, `configMapName`, `secretName`, or `claimName` should be set per volume item.
+
+### volumeMounts Array Items
+
+```json
+{
+  "name": "my-volume",
+  "mountPath": "/container/path",
+  "readOnly": false
+}
+```
+
+### tolerations Array Items
+
+```json
+{
+  "key": "dedicated",
+  "operator": "Equal",
+  "value": "universe",
+  "effect": "NoSchedule"
+}
+```
+
+### service Object
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | `true` | Whether to create a Service alongside each Pod |
+| `type` | `"ClusterIP"` | Service type (`ClusterIP`, `NodePort`, `LoadBalancer`) |
+| `clusterIP` | `"None"` | `"None"` = headless (DNS only). `null` = auto-assign virtual IP |
+| `labels` | `{}` | Extra labels merged into Service metadata |
+| `annotations` | `{}` | Extra annotations (e.g. for external-dns or cloud LB config) |
+| `ownerReference` | `true` | Service is garbage-collected when its Pod is deleted |
+| `cleanupOrphans` | `true` | On startup, delete Services whose Pods no longer exist |
+
+## Per-Instance Services
+
+By default, the K8s extension creates a **headless Service** (ClusterIP `None`) alongside every Pod to provide stable in-cluster DNS resolution. This is how the Velocity proxy plugin connects to backend instances inside a cluster.
+
+### Headless Service (default)
+
+Each instance gets a fully-qualified DNS name usable from any Pod in the cluster:
+
+```text
+universe-<instanceId>.<namespace>.svc.cluster.local
+```
+
+The default service configuration:
+
+```json
+{
+  "service": {
+    "enabled": true,
+    "type": "ClusterIP",
+    "clusterIP": "None",
+    "ownerReference": true,
+    "cleanupOrphans": true
+  }
+}
+```
+
+### Disabling Services
+
+If you use Tailscale or host networking for connectivity, disable per-instance Services to reduce API server churn:
+
+```json
+{
+  "service": { "enabled": false }
+}
+```
+
+### NodePort for External Access
+
+To expose instance ports on the cluster nodes' public IPs:
+
+```json
+{
+  "service": {
+    "enabled": true,
+    "type": "NodePort",
+    "clusterIP": null
+  }
+}
+```
+
+## Cloud Mode with S3 Init Containers
+
+In cloud mode (`hostDataPath` omitted or `null`), the cluster nodes are separate VMs. Universe cannot copy template files to them via `hostPath`. Instead, the extension **automatically generates init containers** that download templates from S3 before the main container starts.
+
+### How It Works
+
+1. The S3 storage extension stores template zips in an S3-compatible bucket.
+2. When an instance is created, the K8s extension reads the `templateInstallationConfig` and finds any templates with `"storage": "s3"`.
+3. For each such template, an init container is generated. It downloads the zip from S3 and extracts it into the Pod's working directory (`emptyDir`).
+4. The main application container starts only after all init containers complete successfully.
+
+### Setup
+
+Configure the S3 storage extension at `./extensions/s3/config.json`:
+
+```json
+{
+  "bucket": "my-universe-templates",
+  "region": "us-east-1",
+  "prefix": "templates/",
+  "accessKey": "AKIA...",
+  "secretKey": "..."
+}
+```
+
+For S3-compatible services (MinIO, Wasabi, DigitalOcean Spaces), add the `endpoint` field:
+
+```json
+{
+  "bucket": "universe-templates",
+  "region": "us-east-1",
+  "endpoint": "https://s3.wasabisys.com",
+  "accessKey": "...",
+  "secretKey": "..."
+}
+```
+
+Then create an instance configuration that references S3 templates:
+
+```json
+{
+  "name": "minecraft-lobby",
+  "runtime": "kube",
+  "command": "java -jar server.jar",
+  "templateInstallationConfig": {
+    "allOf": [
+      { "name": "lobby", "group": "minecraft", "storage": "s3", "priority": 1 }
+    ]
+  }
+}
+```
+
+Do **not** set `hostDataPath` in the K8s config and do **not** configure `s3Bucket` or `s3Prefix` unless you need to override the S3 extension's values. The extension reads them automatically.
+
+The init containers use `amazon/aws-cli:latest` by default. To use a custom image (e.g. a private registry mirror or a smaller image with `aws-cli` + `unzip`):
+
+```json
+{
+  "s3InitImage": "my-registry/aws-cli-unzip:1.0"
+}
+```
+
+## Per-Instance Image Override
+
+Override the container image for a specific instance by setting `CUSTOM_IMAGE` in `environmentVariables`. This takes precedence over the `image` in the extension config:
+
+```json
+{
+  "name": "custom-server",
+  "runtime": "kube",
+  "environmentVariables": {
+    "CUSTOM_IMAGE": "myregistry.com/custom-java:21",
+    "UNIVERSE_INSTANCE_ID": "%INSTANCE_ID%"
+  }
+}
+```
+
+## Cluster-Specific Notes
+
+<Accordion title="Docker Desktop Kubernetes">
+  Docker Desktop (Mac and Windows) includes a built-in Kubernetes cluster that works out of the box with the compose configuration above.
+
+  - Universe auto-rewrites `127.0.0.1:6443` → `host.docker.internal:6443` when it detects it is running inside a container.
+  - `host.docker.internal` is a built-in DNS name on Docker Desktop — no `extra_hosts` entry is needed on Mac or Windows.
+  - On Linux Docker, you **must** add `extra_hosts: ["host.docker.internal:host-gateway"]` to the compose service.
+</Accordion>
+
+<Accordion title="minikube">
+  **Linux:** Start minikube normally, then start Universe with the compose config above. The `127.0.0.1` → `host.docker.internal` rewrite is automatic.
+
+  **Mac/Windows (VM driver):** minikube runs in a VM. The API server is on the VM network, not the host loopback. Switch to the Docker driver to avoid networking issues:
+
+  ```bash
+  minikube start --driver=docker
+  ```
+
+  If minikube uses a hostname like `minikube` in the kubeconfig, add it to `extra_hosts` alongside the `host-gateway` entry:
+
+  ```yaml
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+    - "minikube:<minikube-ip>"
+  ```
+
+  Use `minikube ip` to get the IP address.
+</Accordion>
+
+<Accordion title="Remote Clusters (EKS, GKE, AKS)">
+  For managed cloud clusters, the API server URL in `~/.kube/config` is already a publicly routable hostname. No URL rewriting or `extra_hosts` configuration is needed.
+
+  Requirements:
+  - The Universe container must have outbound internet access to reach the cloud API endpoint.
+  - Mount `~/.kube/config` and set `KUBECONFIG` as shown in the setup steps.
+  - Use cloud mode (omit `hostDataPath`) and configure S3 init containers for template delivery.
+  - Ensure RBAC permissions allow Universe to create, list, and delete Pods and Services in the target namespace.
+</Accordion>
+
+<Accordion title="kind and k3d">
+  Both `kind` and `k3d` run Kubernetes inside Docker containers, which places the API server on a private Docker bridge network — not reachable via `host.docker.internal`.
+
+  **Option 1 — Linux only:** Use `network_mode: host` in the compose service so the Universe container shares the host network stack and can reach `127.0.0.1:6443` directly:
+
+  ```yaml
+  services:
+    universe:
+      network_mode: host
+  ```
+
+  This does **not** work on Docker Desktop (Mac/Windows).
+
+  **Option 2 — All platforms:** Find the API server container's IP address and add a custom `extra_hosts` entry:
+
+  ```yaml
+  extra_hosts:
+    - "<api-server-hostname>:<container-ip>"
+  ```
+
+  The hostname to use is the one listed in `~/.kube/config` for the kind/k3d cluster context.
+</Accordion>
+
+## Troubleshooting
+
+<Accordion title="UnknownHostException: kubernetes.default.svc">
+  Universe attempted in-cluster auto-discovery and failed because it is not running as a Pod. Ensure `KUBECONFIG` is set to the mounted kubeconfig path and the file is readable inside the container.
+</Accordion>
+
+<Accordion title="UnknownHostException: host.docker.internal">
+  You are running on Linux Docker without the `extra_hosts` configuration. Add the following to your compose service and recreate the container:
+
+  ```yaml
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+  ```
+</Accordion>
+
+<Accordion title="Connection refused to host.docker.internal:6443">
+  The Kubernetes API server is not bound to `0.0.0.0:6443` on the host. For minikube, run `minikube tunnel` or restart with `--driver=docker`. For kind/k3d, see the cluster-specific notes above.
+</Accordion>
+
+<Accordion title="Certificate errors after URL rewrite">
+  The TLS certificate was issued for `127.0.0.1`, not `host.docker.internal`. Two options:
+
+  1. Set `masterUrl` in the K8s extension config to skip auto-detection:
+     ```json
+     { "masterUrl": "https://host.docker.internal:6443" }
+     ```
+  2. Regenerate the cluster certificate to include `host.docker.internal` as a Subject Alternative Name.
+</Accordion>
+
+<Accordion title="Pods immediately exit — Phase: Failed">
+  **Local mode:** Verify `hostDataPath` in `./extensions/k8s/config.json` points to the correct host-side path for the Universe data directory. If the path is wrong, the `hostPath` volume mount will be empty and the instance command will fail to find its files.
+
+  **Cloud mode (S3 init containers):** Check the init container logs:
+
+  ```bash
+  kubectl logs <pod-name> -c init-template-<group>-<name>
+  ```
+
+  Common causes: missing S3 credentials in `./extensions/s3/config.json`, wrong bucket or region, template zip not uploaded.
+
+  **Cloud mode (emptyDir):** The pod's working directory is empty. Enable `s3TemplateInit`, mount a shared PVC, or bake files into the container image.
+</Accordion>
+
+<Accordion title="Init containers fail — Unable to locate credentials">
+  The S3 extension config (`./extensions/s3/config.json`) is missing, unreadable, or does not contain `accessKey` and `secretKey`. Verify the file exists at the correct path inside the Universe container (`/data/extensions/s3/config.json` if your data volume is mounted at `/data`).
+</Accordion>
+
+<Accordion title="Init containers fail — NoSuchKey or 404">
+  The template zip does not exist in S3 at the expected path. The default key format is:
+
+  ```
+  s3://<bucket>/<prefix><group>/<name>.zip
+  ```
+
+  With the default prefix `templates/`, a template named `lobby` in group `minecraft` must be at:
+
+  ```
+  s3://my-bucket/templates/minecraft/lobby.zip
+  ```
+
+  Upload via the S3 extension's `s3 upload` command or place the zip manually.
+</Accordion>
+
+<Accordion title="Pods stuck in Pending or ImagePullBackOff">
+  - Verify the `image` value in the K8s config exists in a registry the cluster nodes can reach.
+  - For private registries, configure `imagePullSecrets` on the namespace.
+  - For the S3 init image (`amazon/aws-cli:latest`), ensure cluster nodes have outbound internet access or configure `s3InitImage` to point to a private mirror.
+</Accordion>
+
+<Accordion title="Harmless Netty warning about ByteBuffer.cleaner()">
+  The message `java.nio.ByteBuffer.cleaner(): unavailable` or `sun.misc.Unsafe unavailable` is a non-fatal Netty initialization warning that appears when running inside Docker. Netty catches the exception internally and falls back to a different buffer allocator. To suppress it, rebuild your Universe Docker image with the latest JAR — the entrypoint now includes `--add-exports=java.base/sun.misc=ALL-UNNAMED`.
+</Accordion>
+
+<Note>
+  The kubeconfig file mounted into the container typically contains cluster administrator credentials. Restrict file permissions on `~/.kube/config` and your `docker-compose.yml` data directory. Never expose the Universe REST API publicly when it has access to a Kubernetes cluster.
+</Note>

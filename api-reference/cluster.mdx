@@ -1,0 +1,209 @@
+---
+title: "Cluster API: Node Discovery and Remote Commands"
+sidebarTitle: "Cluster"
+description: "List all Hazelcast cluster nodes, inspect their resources and instances, and dispatch console commands to remote nodes via the REST API."
+---
+
+The Cluster API exposes the live membership view of the underlying Hazelcast cluster. Every node — whether a master or wrapper — is visible here along with its current resource consumption and the list of instances it is hosting. You can also use this API to send console commands to specific nodes, though remote dispatch is partially implemented (see endpoint notes).
+
+All cluster endpoints require a Bearer token with **ALL** permission.
+
+---
+
+## The NodeResources Object
+
+Resource usage is reported for each node in both list and detail responses.
+
+<ResponseField name="usedRamMB" type="integer">
+  Megabytes of RAM currently consumed by running instances on this node. Calculated from the sum of `allocatedRamMB` across all active instances.
+</ResponseField>
+
+<ResponseField name="usedCpu" type="integer">
+  CPU units currently in use on this node. `100` units = 1 full core.
+</ResponseField>
+
+---
+
+## Endpoints
+
+### GET /api/cluster/nodes
+
+Returns a list of all members currently in the Hazelcast cluster, including their network address, whether they are the local node, and their current resource usage.
+
+**Authentication:** ALL permission required.
+
+```bash
+curl http://localhost:8080/api/cluster/nodes \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+
+**Response — 200 OK**
+
+An array of node objects.
+
+<ResponseField name="id" type="string">
+  The Hazelcast member UUID (e.g., `f47ac10b-58cc-4372-a567-0e02b2c3d479`).
+</ResponseField>
+
+<ResponseField name="name" type="string">
+  Human-readable node name (the `nodeId` from `config.json`, e.g., `node-1`).
+</ResponseField>
+
+<ResponseField name="address" type="string">
+  IP address of this cluster member's Hazelcast interface.
+</ResponseField>
+
+<ResponseField name="port" type="integer">
+  Hazelcast cluster port for this member (not the REST API port).
+</ResponseField>
+
+<ResponseField name="local" type="boolean">
+  `true` if this entry represents the node that is serving this API response.
+</ResponseField>
+
+<ResponseField name="resources" type="NodeResources object">
+  Current RAM and CPU usage on this node. See [NodeResources](#the-noderesources-object) above.
+</ResponseField>
+
+```json
+[
+  {
+    "id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+    "name": "node-1",
+    "address": "127.0.0.1",
+    "port": 6000,
+    "local": true,
+    "resources": {
+      "usedRamMB": 4096,
+      "usedCpu": 200
+    }
+  },
+  {
+    "id": "a1b2c3d4-e5f6-7890-ab12-cdef01234567",
+    "name": "node-2",
+    "address": "192.168.1.10",
+    "port": 6000,
+    "local": false,
+    "resources": {
+      "usedRamMB": 2048,
+      "usedCpu": 100
+    }
+  }
+]
+```
+
+| Status | Meaning |
+|--------|---------|
+| `200` | Node list returned. |
+| `401` | Unauthorized. |
+
+---
+
+### GET /api/cluster/nodes/{id}
+
+Returns detailed information about a single cluster node, including the IDs of all instances currently hosted on it.
+
+**Authentication:** ALL permission required.
+
+**Path Parameters**
+
+<ParamField path="id" type="string" required>
+  The Hazelcast member UUID of the target node (e.g., `f47ac10b-58cc-4372-a567-0e02b2c3d479`). Use `GET /api/cluster/nodes` to discover member UUIDs.
+</ParamField>
+
+```bash
+curl http://localhost:8080/api/cluster/nodes/f47ac10b-58cc-4372-a567-0e02b2c3d479 \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+
+**Response — 200 OK**
+
+<ResponseField name="id" type="string">
+  Hazelcast member UUID.
+</ResponseField>
+
+<ResponseField name="name" type="string">
+  Human-readable node name from config.
+</ResponseField>
+
+<ResponseField name="address" type="string">
+  IP address of the node.
+</ResponseField>
+
+<ResponseField name="port" type="integer">
+  Hazelcast port of the node.
+</ResponseField>
+
+<ResponseField name="local" type="boolean">
+  Whether this node is the one handling the request.
+</ResponseField>
+
+<ResponseField name="resources" type="NodeResources object">
+  RAM and CPU usage on this node.
+</ResponseField>
+
+<ResponseField name="instances" type="string[]">
+  Array of 6-character instance IDs currently running on this node.
+</ResponseField>
+
+```json
+{
+  "id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+  "name": "node-1",
+  "address": "127.0.0.1",
+  "port": 6000,
+  "local": true,
+  "resources": {
+    "usedRamMB": 4096,
+    "usedCpu": 200
+  },
+  "instances": ["a1b2c3", "d4e5f6"]
+}
+```
+
+| Status | Meaning |
+|--------|---------|
+| `200` | Node details returned. |
+| `404` | No node with this UUID in the cluster. |
+| `401` | Unauthorized. |
+
+---
+
+### POST /api/cluster/nodes/{id}/command
+
+Dispatches a console command to the specified cluster node.
+
+**Authentication:** ALL permission required.
+
+**Path Parameters**
+
+<ParamField path="id" type="string" required>
+  The Hazelcast member UUID of the target node.
+</ParamField>
+
+**Request Body**
+
+<ParamField body="command" type="string" required>
+  The console command string to execute (e.g., `instance list`, `cluster status`).
+</ParamField>
+
+```bash
+curl -X POST \
+  http://localhost:8080/api/cluster/nodes/a1b2c3d4-e5f6-7890-ab12-cdef01234567/command \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"command": "instance list"}'
+```
+
+<Warning>
+  Remote node command execution via Hazelcast executor is **not yet fully implemented**. Sending a command to the **local** node returns a `400` directing you to use `POST /api/commands/execute` instead. Sending to a **remote** node returns `501 Not Implemented`.
+
+  Use [POST /api/commands/execute](/api-reference/commands) for executing commands on the node handling your request.
+</Warning>
+
+| Status | Meaning |
+|--------|---------|
+| `400` | Target is the local node — use `/api/commands/execute`. |
+| `404` | Node UUID not found in cluster. |
+| `501` | Remote node command dispatch is not yet implemented. |
+| `401` | Unauthorized. |

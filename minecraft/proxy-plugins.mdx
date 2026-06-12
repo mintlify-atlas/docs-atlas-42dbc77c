@@ -1,0 +1,162 @@
+---
+title: "Proxy Plugins: Velocity and BungeeCord Auto-Connect"
+sidebarTitle: "Proxy Plugins"
+description: "Velocity 3.5.0 and BungeeCord proxy plugins that poll Universe instances from the REST API, register them as backends, and auto-connect players on join."
+---
+
+Universe's proxy plugins sit at the network edge and act as a bridge between your proxy and the live cluster state. Rather than maintaining a static server list in `velocity.toml` or `config.yml`, the proxy plugin periodically polls the Universe Master REST API for all `ONLINE` instances and registers them as backend servers automatically — no restarts required when instances scale up or down.
+
+On top of dynamic server registration, both proxy plugins support an **auto-connect** feature that routes players to the right backend the moment they join, using one of three configurable selection strategies.
+
+## What Proxy Plugins Do
+
+When a proxy plugin starts it performs the following:
+
+1. **Loads configuration** from `plugins/Universe/config.yml`, with system properties and environment variables taking precedence.
+2. **Starts an instance poller** that calls `GET /api/instances` on the configured interval and registers or deregisters backend servers as instances come online and go offline.
+3. **Optionally registers an auto-connect listener** that intercepts player join events and sends players to a server selected by the configured strategy.
+4. **Registers the `/universe` command set** for manual inspection and player routing.
+
+## Installation and Configuration
+
+<Tabs>
+  <Tab title="Velocity (3.5.0)">
+    The `minecraft-velocity` plugin targets Velocity 3.5.0 and uses the Velocity event system and Incendo Cloud for commands. Its plugin descriptor (`velocity-plugin.json`) identifies it to the Velocity proxy:
+
+    ```json
+    {
+      "id": "universe",
+      "name": "Universe",
+      "description": "Auto-registers Universe instances as Velocity backends",
+      "version": "${version}",
+      "authors": ["Scala Universe"],
+      "main": "gg.scala.universe.minecraft.velocity.UniverseVelocityPlugin"
+    }
+    ```
+
+    <Steps>
+      <Step title="Build or download the JAR">
+        ```bash
+        ./gradlew :minecraft:minecraft-velocity:build
+        # Output: .built/minecraft-velocity-<version>-all.jar
+        ```
+      </Step>
+      <Step title="Place the JAR in plugins/">
+        Copy the JAR into Velocity's `plugins/` directory.
+      </Step>
+      <Step title="Configure the plugin">
+        On first start, `plugins/universe/config.yml` is created automatically:
+
+        ```yaml
+        # Universe Velocity Plugin Configuration
+        master-url: "http://localhost:6000"
+        poll-interval-seconds: 10
+        # api-key: ""
+
+        # Auto-connect: automatically route players to a server on join
+        auto-connect:
+          enabled: false
+          # The configuration type to connect players to (e.g., "lobby", "hub")
+          configuration-type: "lobby"
+          # Server selection strategy: least_populated, most_populated, random
+          strategy: "least_populated"
+        ```
+      </Step>
+      <Step title="Restart Velocity">
+        The plugin logs `Universe Velocity plugin enabled. Polling <url> every <n>s` on success.
+      </Step>
+    </Steps>
+  </Tab>
+  <Tab title="BungeeCord">
+    The `minecraft-bungee` plugin targets BungeeCord and uses a `ScheduledExecutorService` for polling (BungeeCord does not have Velocity's async task API). Its plugin descriptor (`bungee.yml`) is minimal:
+
+    ```yaml
+    name: Universe
+    version: ${version}
+    main: gg.scala.universe.minecraft.bungee.UniverseBungeePlugin
+    author: Scala Universe
+    ```
+
+    <Steps>
+      <Step title="Build or download the JAR">
+        ```bash
+        ./gradlew :minecraft:minecraft-bungee:build
+        # Output: .built/minecraft-bungee-<version>-all.jar
+        ```
+      </Step>
+      <Step title="Place the JAR in plugins/">
+        Copy the JAR into BungeeCord's `plugins/` directory.
+      </Step>
+      <Step title="Configure the plugin">
+        On first start, `plugins/Universe/config.yml` is created:
+
+        ```yaml
+        # Universe BungeeCord Plugin Configuration
+        master-url: "http://localhost:6000"
+        poll-interval-seconds: 10
+        # api-key: ""
+
+        # Auto-connect: automatically route players to a server on join
+        auto-connect:
+          enabled: false
+          # The configuration type to connect players to (e.g., "lobby", "hub")
+          configuration-type: "lobby"
+          # Server selection strategy: least_populated, most_populated, random
+          strategy: "least_populated"
+        ```
+      </Step>
+      <Step title="Restart BungeeCord">
+        The plugin logs `Universe BungeeCord plugin enabled. Polling <url> every <n>s` on success.
+      </Step>
+    </Steps>
+  </Tab>
+</Tabs>
+
+## Configuration Reference
+
+| Key | Default | System Property | Env Var | Description |
+|---|---|---|---|---|
+| `master-url` | `http://localhost:6000` | `universe.master.url` | `UNIVERSE_MASTER_URL` | Base URL of the Universe Master REST API |
+| `poll-interval-seconds` | `10` | — | — | How often (in seconds) to poll the Master for instance changes |
+| `api-key` | *(none)* | `universe.api.key` | `UNIVERSE_API_KEY` | Optional Bearer token for Master API authentication |
+| `auto-connect.enabled` | `false` | — | — | Whether to auto-route players to a backend on join |
+| `auto-connect.configuration-type` | `"lobby"` | — | — | Only instances using this configuration name are eligible |
+| `auto-connect.strategy` | `"least_populated"` | — | — | Server selection strategy (see below) |
+
+## Instance Polling
+
+The poller calls `GET /api/instances` on every tick. For each `ONLINE` instance returned:
+
+- If a Velocity/BungeeCord server with the instance's ID does not yet exist, the poller registers it using the `hostAddress:allocatedPort` from `InstanceInfo`.
+- If a previously registered server no longer appears in the response (or is not `ONLINE`), the poller removes it from the proxy's server list.
+
+This means backend servers appear and disappear from the proxy's routing table within one poll interval of their actual state change in the cluster.
+
+## Auto-Connect Strategies
+
+When `auto-connect.enabled` is `true`, the proxy intercepts the `PostLoginEvent` (Velocity) or `LoginEvent` (BungeeCord) and selects a destination server from all `ONLINE` instances whose `configurationName` matches `configuration-type`.
+
+| Strategy | Enum Value | Behavior |
+|---|---|---|
+| `least_populated` | `LEAST_POPULATED` | Sends the player to the instance with the fewest current players. Best for even load distribution. |
+| `most_populated` | `MOST_POPULATED` | Sends the player to the instance with the most players that is not yet full (`players < maxPlayers`). Useful for consolidating players into fewer active game instances. |
+| `random` | `RANDOM` | Picks a random eligible instance from the list regardless of player count. |
+
+<Tip>
+  Use `LEAST_POPULATED` for lobby and hub servers so players spread evenly across instances. Use `MOST_POPULATED` for minigame waiting rooms where you want to fill one game before opening the next.
+</Tip>
+
+If no eligible instance is found — because all instances are full or none match the configured `configuration-type` — the auto-connect listener does nothing and the player lands on the proxy's configured fallback server.
+
+## `/universe` Proxy Commands
+
+Both proxy plugins register the following commands. The `send` subcommand is unique to proxy plugins.
+
+| Subcommand | Permission | Description |
+|---|---|---|
+| `/universe info` | Operator | Shows the Master URL, connection status, and poll interval |
+| `/universe send <player> <server>` | Operator | Manually transfers `<player>` to the Universe instance named `<server>` |
+
+<Note>
+  The `<server>` argument in `/universe send` maps to the instance ID as registered in the proxy's server list. You can list all registered servers with the standard `/server` command built into Velocity and BungeeCord.
+</Note>

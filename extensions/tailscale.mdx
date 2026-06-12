@@ -1,0 +1,153 @@
+---
+title: "Tailscale Extension: Mesh Network IP Variables"
+sidebarTitle: "Tailscale"
+description: "Inject Tailscale mesh-network IPs as template variables so instances advertise stable routable addresses for cross-node connectivity without public IPs."
+---
+
+The Tailscale extension implements `TemplateVariableProvider` and makes your node's Tailscale network addresses available as `%TAILSCALE_*%` placeholder variables during instance deployment. This lets instances bind to and advertise their Tailscale IP, giving proxies and clients a stable address that works across any Tailscale-connected machine — regardless of public IP, NAT, or firewall configuration.
+
+## When to Use This
+
+- You run Universe nodes on different machines, VPS instances, or home servers and need them to communicate reliably.
+- You want instances to be reachable via Tailscale's encrypted mesh network without configuring port forwarding.
+- You already use Tailscale for Zero Trust networking and want Universe to participate naturally.
+
+## How It Works
+
+On load, the extension spawns the `tailscale` CLI with `tailscale status --json` and parses the JSON response to extract the local node's addresses. Results are cached in memory for 30 seconds and refreshed on the next variable resolution. The following variables are injected during every instance deployment:
+
+| Variable | Example value | Description |
+|----------|---------------|-------------|
+| `%TAILSCALE_IP%` | `100.64.1.1` | IPv4 address on the tailnet |
+| `%TAILSCALE_IP6%` | `fd7a:115c:a1e0::1` | IPv6 address on the tailnet |
+| `%TAILSCALE_HOSTNAME%` | `my-server` | Machine hostname as seen in Tailscale |
+| `%TAILSCALE_MAGIC_DNS%` | `my-server.tail12345.ts.net` | Full MagicDNS FQDN for the node |
+| `%TAILSCALE_ADDRESS%` | `100.64.1.1` | Alias for `%TAILSCALE_IP%` |
+
+## Docker Compose Setup
+
+The Tailscale CLI is a thin client that talks to the `tailscaled` daemon over a UNIX socket. When running Universe inside a container, mount both the binary and the daemon socket directory from the host:
+
+```yaml
+services:
+  universe:
+    image: git.lunarlabs.dev/scala/universe:latest
+    volumes:
+      - ./data:/data
+      - /usr/bin/tailscale:/usr/bin/tailscale:ro       # binary
+      - /var/run/tailscale:/var/run/tailscale          # daemon socket
+```
+
+Verify the socket is reachable inside the container:
+
+```bash
+docker exec <container> tailscale status
+```
+
+## Configuration
+
+Create `./extensions/tailscale/config.json`:
+
+```json
+{
+  "binaryPath": "tailscale",
+  "timeoutMs": 5000,
+  "warnIfUnavailable": true,
+  "socketPath": "/var/run/tailscale/tailscaled.sock"
+}
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `binaryPath` | `"tailscale"` | Path to the `tailscale` binary. Change if it is not on `PATH` |
+| `timeoutMs` | `5000` | Maximum wait time in milliseconds for `tailscale status --json` to respond |
+| `warnIfUnavailable` | `true` | Log a warning on startup if Tailscale is not running or unreachable |
+| `socketPath` | `null` | Path to the `tailscaled` daemon socket. Required in Docker when the socket is mounted at a non-standard path. Passed to the CLI as `--socket <path>`. Common values: `/var/run/tailscale/tailscaled.sock`, `/run/tailscale/tailscaled.sock` |
+
+## Usage Examples
+
+### Setting `hostAddress` to the Tailscale IP
+
+```json
+{
+  "name": "lobby",
+  "hostAddress": "%TAILSCALE_IP%",
+  "availablePorts": { "min": 25565, "max": 25570 },
+  "runtime": "screen"
+}
+```
+
+The proxy (Velocity / BungeeCord) will connect directly to `100.64.1.1:25565` over the encrypted Tailscale tunnel.
+
+### In `fileModifications` (template variable replacement)
+
+```json
+{
+  "fileModifications": ["server.properties"],
+  "properties": {
+    "server-ip": "%TAILSCALE_IP%"
+  }
+}
+```
+
+### In `environmentVariables`
+
+```json
+{
+  "environmentVariables": {
+    "UNIVERSE_HOST": "%TAILSCALE_IP%",
+    "UNIVERSE_MAGIC_DNS": "%TAILSCALE_MAGIC_DNS%"
+  }
+}
+```
+
+## Fallback Behaviour
+
+If Tailscale is not running or the binary is missing when Universe starts:
+
+- All `%TAILSCALE_*%` variables resolve to empty strings.
+- The configuration's `hostAddress` falls back to its literal value (which will contain `%TAILSCALE_IP%` unreplaced if that was set).
+- If `warnIfUnavailable` is `true`, the extension logs a startup warning.
+
+<Warning>
+  If `hostAddress` is set to `%TAILSCALE_IP%` and Tailscale is unavailable, instances will be registered with an empty host address. Ensure Tailscale is running before Universe starts if you depend on these variables.
+</Warning>
+
+## Troubleshooting
+
+<Accordion title='"No Tailscale IP detected" warning on startup'>
+
+Check that `tailscaled` is running on the host machine:
+
+```bash
+sudo systemctl status tailscaled
+```
+
+Verify the socket is accessible from inside the container:
+
+```bash
+docker exec <container> ls -la /var/run/tailscale/
+docker exec <container> tailscale status
+```
+
+If the socket is present but the command hangs, check that `socketPath` in `config.json` matches the actual socket path.
+</Accordion>
+
+<Accordion title='"Permission denied" on the daemon socket'>
+
+The container user does not have read access to the socket file. To fix this either:
+
+- Run `tailscaled` as root on the host so the socket is world-readable, or
+- Relax the socket permissions: `sudo chmod g+r /var/run/tailscale/tailscaled.sock`
+</Accordion>
+
+<Accordion title='Binary not found'>
+
+If `tailscale` is not on the system `PATH` inside the container, set `binaryPath` to the absolute path of the mounted binary:
+
+```json
+{
+  "binaryPath": "/usr/bin/tailscale"
+}
+```
+</Accordion>

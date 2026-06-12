@@ -1,0 +1,174 @@
+---
+title: "Networking: Ports, Cross-Node Connectivity, and Proxy"
+sidebarTitle: "Networking"
+description: "Port allocation algorithm, Hazelcast cluster formation, Tailscale mesh networking, firewall rules, and Velocity/BungeeCord proxy auto-connect strategies."
+---
+
+Universe requires two open ports per node — one for Hazelcast cluster communication and one for the Ktor REST API — plus a dynamic range of ports for the instances it manages. Understanding how ports are allocated and how nodes reach each other is essential for multi-node and cross-datacenter deployments.
+
+## Default Ports
+
+| Service | Default Port | Configurable via |
+|---|---|---|
+| Hazelcast cluster bus | `6000` | `port` in `config.json` |
+| Ktor REST API | `7000` | `apiPort` in `config.json` |
+| Instance port range | `25565 – 25570` (example) | `availablePorts` in each `configuration/*.json` |
+
+Both core ports are set in `./config.json` on every node:
+
+```json
+{
+  "address": "127.0.0.1",
+  "port": 6000,
+  "apiPort": 7000,
+  "nodeId": "node-1",
+  "clusterName": "universe-cluster",
+  "isMasterNode": true,
+  "masterAddress": "127.0.0.1",
+  "masterPort": 6000,
+  "masterApiPort": 7000
+}
+```
+
+---
+
+## Port Allocation Algorithm
+
+When Universe starts an instance it must assign a port from the range defined in the instance's configuration. The `PortAllocator` checks three sources in order before assigning any port to ensure there are no conflicts, even when multiple configurations share overlapping ranges or when external services already occupy ports on the machine.
+
+<Steps>
+  <Step title="Local in-memory allocations">
+    A `ConcurrentHashMap` tracks every port this JVM has already assigned. If a port is in that set it is skipped immediately, without any network or OS call.
+  </Step>
+  <Step title="Cluster-wide active instances via Hazelcast">
+    The allocator queries the Hazelcast `IMap` for all instances whose state is `ONLINE` or `CREATING` across every node in the cluster, then excludes their `allocatedPort` values. This prevents two Wrapper nodes from assigning the same port to different instances even if they share a port range.
+  </Step>
+  <Step title="OS-level bind and connect probe">
+    For each remaining candidate port the allocator attempts two checks:
+    1. **`ServerSocket` bind** — if the bind fails, something else owns the port.
+    2. **TCP connect probe** (`localhost:port`, 100 ms timeout) — if the connection succeeds, a service is already listening even if the bind appeared to succeed (e.g., due to socket reuse options).
+
+    A port is considered free only if the bind succeeds **and** the connect probe fails.
+  </Step>
+</Steps>
+
+Once a free port is found it is added to the local in-memory set, logged, and returned. On instance stop, `release(port)` removes it from the in-memory set so the port can be reused by a future instance.
+
+---
+
+## Hazelcast Cluster Formation
+
+Master and Wrapper nodes form a Hazelcast cluster over TCP. Every node needs to know the Master's Hazelcast address so it can join the cluster on startup.
+
+```json
+{
+  "isMasterNode": false,
+  "masterAddress": "universe-master",
+  "masterPort": 6000,
+  "masterApiPort": 7000
+}
+```
+
+In Docker Compose the `masterAddress` can be set to the service name (`universe-master`). On bare-metal or VM deployments, use the Master's IP address. Wrapper nodes do not need a publicly reachable IP themselves — they initiate the outbound connection to the Master.
+
+---
+
+## Cross-Node Connectivity
+
+Instances advertise a `hostAddress` that other services (e.g., the Velocity proxy plugin) use to connect. The address must be reachable from whatever client will be connecting, which may differ from the local machine's loopback or LAN address.
+
+<CardGroup cols={2}>
+  <Card title="Default: hostAddress" icon="server">
+    Set `hostAddress` in `./configuration/<name>.json` to the IP that remote clients should use. Works for single-datacenter setups where all nodes share a LAN.
+
+    ```json
+    {
+      "hostAddress": "10.0.0.5"
+    }
+    ```
+  </Card>
+  <Card title="Tailscale Mesh" icon="lock">
+    Install the Tailscale extension and use the `%TAILSCALE_IP%` variable. Universe replaces it with the node's Tailscale IP at instance creation time, giving each instance a stable encrypted-mesh address.
+
+    ```json
+    {
+      "hostAddress": "%TAILSCALE_IP%"
+    }
+    ```
+  </Card>
+  <Card title="Kubernetes Headless Services" icon="cloud">
+    The `runtime-k8s` extension exposes `%SERVICE_DNS%` which resolves to `universe-<id>.<namespace>.svc.cluster.local`. Use this for in-cluster pod-to-pod connectivity.
+
+    ```json
+    {
+      "hostAddress": "%SERVICE_DNS%"
+    }
+    ```
+  </Card>
+  <Card title="Public IP / NodePort" icon="globe">
+    For Kubernetes nodes exposed outside the cluster, set `hostAddress` to the node's public IP and use a `NodePort` service so external clients can reach allocated ports.
+
+    ```json
+    {
+      "hostAddress": "203.0.113.42"
+    }
+    ```
+  </Card>
+</CardGroup>
+
+<Tip>
+  Tailscale is the easiest way to connect Universe nodes that span multiple datacenters or cloud providers. Every node gets a stable mesh IP regardless of its physical location, NAT configuration, or cloud firewall rules. Install the `tailscale` extension JAR in `./extensions/` on each node and set `"hostAddress": "%TAILSCALE_IP%"` in your instance configurations.
+</Tip>
+
+---
+
+## Firewall Requirements
+
+Open the following ports depending on the role of each machine:
+
+<Accordion title="Master node">
+  | Port | Protocol | Direction | Purpose |
+  |---|---|---|---|
+  | `6000` (or custom `port`) | TCP | Inbound from Wrappers | Hazelcast cluster bus |
+  | `7000` (or custom `apiPort`) | TCP | Inbound from clients / Wrappers | Ktor REST API |
+
+  The Hazelcast port must be reachable from every Wrapper node. The REST API port must be reachable from any machine that calls the HTTP API (CI/CD, Minecraft plugins, dashboards).
+</Accordion>
+
+<Accordion title="Wrapper nodes">
+  | Port | Protocol | Direction | Purpose |
+  |---|---|---|---|
+  | `6000` outbound to Master | TCP | Outbound | Join Hazelcast cluster |
+  | Instance range (e.g., `25565–25570`) | TCP | Inbound from proxy/clients | Instance ports |
+
+  Wrappers initiate the connection to the Master; no inbound Hazelcast port is needed on Wrapper machines themselves unless they also form a peer cluster.
+</Accordion>
+
+<Accordion title="Instance ports">
+  The port range used by instances (defined per configuration in `availablePorts`) must be open inbound on the Wrapper node that runs those instances. If the Velocity or BungeeCord plugin connects to instances, the proxy machines need outbound access to those ports on every Wrapper.
+</Accordion>
+
+<Warning>
+  The Hazelcast port (`6000` by default) must **not** be exposed to the public internet. It grants full cluster membership — any process that can connect can execute Hazelcast tasks. Restrict it to your internal network or VPN at the firewall level.
+</Warning>
+
+---
+
+## Proxy Auto-Connect Strategies
+
+The Universe Velocity and BungeeCord plugins poll the Master REST API for active instances and register them as backend servers automatically. When a player joins the proxy, the plugin selects a backend server using one of three strategies.
+
+| Strategy | Behaviour |
+|---|---|
+| `LEAST_POPULATED` | Send the player to the instance with the fewest current players — distributes load evenly |
+| `MOST_POPULATED` | Send the player to the instance with the most current players — useful for minigame lobbies that should fill before opening a new one |
+| `RANDOM` | Pick a random instance from the available pool |
+
+Configure the strategy in `plugins/Universe/config.yml` on the proxy server:
+
+```yaml
+auto-connect: true
+auto-connect-strategy: LEAST_POPULATED
+```
+
+Set `auto-connect: false` to disable automatic player routing and handle server selection in your own plugin code via the `UniverseAPI`.

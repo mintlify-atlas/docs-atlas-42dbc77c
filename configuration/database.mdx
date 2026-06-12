@@ -1,0 +1,206 @@
+---
+title: "Database Configuration: Storage Backends for Universe"
+sidebarTitle: "Database"
+description: "Reference for database.json — covers built-in H2 and MySQL providers, and PostgreSQL, MongoDB, and Redis via drop-in extension JARs."
+---
+
+Universe persists API keys and other cluster state in a relational or document store selected through `./database.json`. The file must sit in the same working directory as the JAR. All built-in providers use [jOOQ](https://www.jooq.org/) for type-safe SQL without code generation, and H2 runs in MySQL compatibility mode so the same schema DDL works across both built-in providers.
+
+## Configuration File
+
+Create or edit `./database.json`:
+
+```json
+{
+  "provider": "h2",
+  "url": "universe.db",
+  "host": "localhost",
+  "port": 3306,
+  "database": "universe",
+  "username": "sa",
+  "password": ""
+}
+```
+
+All fields are present regardless of the active provider. Fields that do not apply to the chosen provider are silently ignored — the file acts as a self-documenting reference.
+
+## Field Reference
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `provider` | string | `"h2"` | Database provider key. Built-ins: `h2`, `mysql`. Extension-provided: `postgres`, `mongodb`, `redis`. |
+| `url` | string | `"universe.db"` | **H2 only.** Database file name. The file is created under `./data/`. |
+| `host` | string | `"localhost"` | **MySQL / extension providers.** Database server hostname. |
+| `port` | integer | `3306` | **MySQL / extension providers.** Database server port. |
+| `database` | string | `"universe"` | **MySQL / extension providers.** Schema or database name to connect to. |
+| `username` | string | `"sa"` | Database username. |
+| `password` | string | `""` | Database password. |
+
+## Provider Reference
+
+<Tabs>
+  <Tab title="H2 (Default)">
+    H2 is an embedded, file-based database that requires zero external infrastructure. It is the default provider and the best choice for single-node or development setups.
+
+    ```json
+    {
+      "provider": "h2",
+      "url": "universe.db",
+      "host": "localhost",
+      "port": 3306,
+      "database": "universe",
+      "username": "sa",
+      "password": ""
+    }
+    ```
+
+    The database file is created at `./data/universe.db` relative to the working directory. H2 operates in MySQL compatibility mode (`MODE=MySQL`) so schema migrations written for MySQL will work without modification.
+
+    <Note>
+      No additional JAR or service is required. H2 is bundled with Universe.
+    </Note>
+  </Tab>
+
+  <Tab title="MySQL">
+    Connect to a running MySQL or MariaDB server. The built-in MySQL provider uses the MariaDB JDBC driver for compatibility with both servers.
+
+    ```json
+    {
+      "provider": "mysql",
+      "url": "universe.db",
+      "host": "db.example.com",
+      "port": 3306,
+      "database": "universe",
+      "username": "universe",
+      "password": "changeme"
+    }
+    ```
+
+    <Note>
+      MySQL support is built in — no extension JAR is needed. Ensure the `universe` database schema exists before starting Universe.
+    </Note>
+  </Tab>
+
+  <Tab title="PostgreSQL">
+    Connect to a remote PostgreSQL server. Requires the `extension-db-postgres` JAR placed in `./extensions/`.
+
+    ```json
+    {
+      "provider": "postgres",
+      "url": "universe.db",
+      "host": "db.example.com",
+      "port": 5432,
+      "database": "universe",
+      "username": "universe",
+      "password": "changeme"
+    }
+    ```
+
+    <Warning>
+      The `extension-db-postgres` JAR must be present in `./extensions/` before startup. Universe will fall back to H2 if no provider is registered for the `postgres` key.
+    </Warning>
+  </Tab>
+
+  <Tab title="MongoDB">
+    Connect to a MongoDB server. Requires the `extension-db-mongodb` JAR placed in `./extensions/`.
+
+    ```json
+    {
+      "provider": "mongodb",
+      "url": "universe.db",
+      "host": "db.example.com",
+      "port": 27017,
+      "database": "universe",
+      "username": "universe",
+      "password": "changeme"
+    }
+    ```
+
+    <Warning>
+      The `extension-db-mongodb` JAR must be present in `./extensions/` before startup.
+    </Warning>
+  </Tab>
+
+  <Tab title="Redis">
+    Connect to a Redis server for ultra-fast key lookups. Requires the `extension-db-redis` JAR placed in `./extensions/`.
+
+    ```json
+    {
+      "provider": "redis",
+      "url": "universe.db",
+      "host": "localhost",
+      "port": 6379,
+      "database": "universe",
+      "username": "",
+      "password": ""
+    }
+    ```
+
+    <Warning>
+      The `extension-db-redis` JAR must be present in `./extensions/` before startup.
+    </Warning>
+  </Tab>
+</Tabs>
+
+## SQL Schema
+
+On startup Universe automatically creates the `api_keys` table if it does not already exist:
+
+```sql
+CREATE TABLE IF NOT EXISTS api_keys (
+    key_id     VARCHAR(64)  PRIMARY KEY,
+    token      VARCHAR(256) NOT NULL UNIQUE,
+    permission VARCHAR(16)  NOT NULL
+);
+```
+
+This table is the only schema managed by the core. Extensions may create their own tables through the same `DatabaseProvider` connection.
+
+## Custom Providers via Extensions
+
+You can register a custom database backend by implementing the `DatabaseProvider` interface from `extensions/extension-api` and dropping the JAR in `./extensions/`.
+
+<Steps>
+  <Step title="Implement DatabaseProvider">
+    Create a class that implements `DatabaseProvider` with the connection and CRUD logic for your backend.
+  </Step>
+
+  <Step title="Implement Extension and register">
+    In your `Extension.onLoad()`, obtain the injected `DatabaseRegistry` and register your provider under a unique key:
+
+    ```kotlin
+    class MongoExtension @Inject constructor(
+        private val registry: DatabaseRegistry
+    ) : Extension {
+        override fun id() = "mongodb"
+        override fun version() = "1.0.0"
+
+        override fun onLoad() {
+            registry.register("mongodb", MongoDatabaseProvider(config))
+        }
+
+        override fun onUnload() {}
+        override fun onReload() {}
+    }
+    ```
+  </Step>
+
+  <Step title="Set provider key in database.json">
+    Set the `provider` field to the key you registered:
+
+    ```json
+    {
+      "provider": "mongodb",
+      "host": "db.example.com",
+      "port": 27017,
+      "database": "universe",
+      "username": "universe",
+      "password": "changeme"
+    }
+    ```
+  </Step>
+</Steps>
+
+<Tip>
+  Avoid depending on the `:app` module from any extension. Use only `:api` and `:extensions:extension-api` and register your provider through the injected registry in `onLoad()`.
+</Tip>
