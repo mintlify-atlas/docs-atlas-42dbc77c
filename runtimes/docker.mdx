@@ -125,7 +125,8 @@ All fields in `./extensions/docker/config.json`:
 | `javaImage.tag` | string | `"25-jdk-alpine"` | Image tag |
 | `javaImage.registry` | string | `null` | Optional private registry prefix |
 | `javaImage.platform` | string | `null` | Optional platform override (e.g. `"linux/amd64"`) |
-| `volumes` | array | `[]` | Additional bind mounts applied to every instance container |
+| `volumes` | array | `[]` | Additional bind mounts applied to every instance container (structured objects — see below) |
+| `binds` | array | `[]` | Additional raw bind-mount strings in `"hostPath:containerPath"` or `"hostPath:containerPath:ro"` format |
 | `exposedPorts` | array | `[]` | Additional ports to expose on instance containers |
 | `autoRemove` | boolean | `true` | Automatically remove the container when it exits |
 | `stopTimeout` | int | `30` | Seconds to wait for graceful shutdown before `SIGKILL` |
@@ -148,6 +149,15 @@ Each item in the `volumes` array maps a host path into every instance container:
   "containerPath": "/container/mount/point",
   "readOnly": false
 }
+```
+
+### binds Array Items
+
+Each item is a raw Docker bind-mount string. Use this for quick one-liners when the structured `volumes` objects are unnecessary:
+
+```json
+"/host/path:/container/path"
+"/host/path:/container/path:ro"
 ```
 
 ### exposedPorts Array Items

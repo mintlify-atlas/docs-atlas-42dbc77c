@@ -1,5 +1,5 @@
 ---
-title: "Building Custom Extensions for Universe"
+title: "Building and Deploying Custom Extensions for Universe"
 sidebarTitle: "Building Extensions"
 description: "Implement the Extension interface, register custom providers via injected registries in onLoad(), and ship the result as a single JAR in ./extensions/."
 ---
@@ -221,13 +221,36 @@ The `:extensions:extension-api` module exposes five interfaces you can implement
   `RuntimeProvider` lives in the main `:api` module (not `:extensions:extension-api`) and is implemented by the Docker and Kubernetes extensions. It defines how instances are started, stopped, and monitored. Register via `RuntimeRegistry`.
 
   ```kotlin
-  // Skeletal implementation — see runtime-docker or runtime-k8s for full examples
-  class MyRuntimeProvider : RuntimeProvider {
-      override val runtimeKey = "my-runtime"
+  interface RuntimeProvider {
+      /** Start a new process for the given instance and return its ProcessHandle. */
+      fun start(
+          instanceId: String,
+          workingDir: java.nio.file.Path,
+          port: Int,
+          command: String,
+          ramMB: Int,
+          cpu: Int,
+          configuration: Configuration,
+          environmentVariables: Map<String, String>? = null,
+      ): ProcessHandle
 
-      override fun start(instance: Instance, config: Configuration) { /* ... */ }
-      override fun stop(instance: Instance) { /* ... */ }
-      override fun execute(instance: Instance, command: String) { /* ... */ }
+      /** Stop the process associated with the given instance. */
+      fun stop(instanceId: String)
+
+      /** Pipe a command string into the running instance's stdin. */
+      fun executeCommand(instanceId: String, command: String)
+
+      /** Returns true if the instance process is currently running. */
+      fun isRunning(instanceId: String): Boolean
+
+      /** Returns a list of instance IDs currently managed by this runtime (used for recovery). */
+      fun listRunningInstances(): List<String> = emptyList()
+
+      /** Returns the reachable host address for the given instance, or empty string. */
+      fun getHostAddress(instanceId: String): String = ""
+
+      /** Returns the latest log lines for the given instance. */
+      fun getLogs(instanceId: String, lines: Int = 100): List<String> = emptyList()
   }
   ```
 

@@ -63,7 +63,7 @@ The following ASCII diagram from the project shows the full component layout and
 <Accordion title="Master: Hazelcast IMap State">
   `ClusterStateService` manages two distributed maps visible to every cluster member:
 
-  - **`"instances"` → `IMap<String, InstanceInfo>`** — the single source of truth for all running, creating, offline, and stopped instances. Wrappers write heartbeat updates via `PUT /api/instances/{id}/state`.
+  - **`"instances"` → `IMap<String, InstanceInfo>`** — the single source of truth for all running, creating, offline, and stopped instances. Wrappers write state updates directly to this IMap via `ClusterStateService.putInstance()` — both nodes are Hazelcast members and share the same distributed map.
   - **`"configurations"` → `IMap<String, Configuration>`** — loaded from `./configuration/` on startup and reloadable at runtime via `config reload` or `POST /api/node/reload`.
 
   `ResilienceMembershipListener` fires on `memberRemoved`: any instance whose `wrapperNodeId` matches the departed member is transitioned to `OFFLINE` rather than deleted, preserving history and enabling future recovery.
@@ -86,6 +86,7 @@ The following ASCII diagram from the project shows the full component layout and
   | `StopInstanceTask` | `RuntimeProvider.stop()` |
   | `ExecuteCommandTask` | `RuntimeProvider.executeCommand()` (pipes to process stdin) |
   | `TemplateSyncTask` | `TemplateSyncService` — unzips received bytes into `./templates/` |
+  | `ShutdownNodeTask` | Stops all local instances, releases ports, and exits the JVM |
 </Accordion>
 
 <Accordion title="Wrapper: TemplateManager">
@@ -123,7 +124,7 @@ Task objects are defined in the `api` module and serialised to JSON strings befo
 6. Hazelcast serialises and routes the callable to the target member.
 7. Wrapper deserialises the payload in `TaskDeserializer`, extracts `DeployInstanceTask`.
 8. `TaskRouter` calls `TemplateManager` (copy + variable replace), then `RuntimeProvider.start()`.
-9. Wrapper updates `InstanceInfo.state = ONLINE` via `PUT /api/instances/{id}/state` on the Master.
+9. Wrapper writes `InstanceInfo.state = ONLINE` directly to the `"instances"` IMap via `ClusterStateService.putInstance()` (the Wrapper is a full Hazelcast cluster member and shares the distributed map).
 
 ---
 
@@ -134,7 +135,7 @@ Task objects are defined in the `api` module and serialised to JSON strings befo
     The Master writes the `InstanceInfo` record to the Hazelcast `"instances"` IMap with `state = CREATING` immediately after selecting a Wrapper and before dispatching the task. The instance is visible in `GET /api/instances` at this point.
   </Step>
   <Step title="ONLINE">
-    Once the Wrapper has copied templates, replaced variables, and successfully started the process via `RuntimeProvider.start()`, it calls `PUT /api/instances/{id}/state` to transition the state to `ONLINE`. Wrappers continue sending periodic heartbeat updates to keep `lastHeartbeat` current.
+    Once the Wrapper has copied templates, replaced variables, and successfully started the process via `RuntimeProvider.start()`, it writes the updated `InstanceInfo` (with `state = ONLINE`, the allocated port, and the process PID) directly to the shared Hazelcast IMap via `ClusterStateService.putInstance()`. Wrappers continue sending periodic heartbeat updates to keep `lastHeartbeat` current.
   </Step>
   <Step title="OFFLINE">
     If a Wrapper node disconnects from the Hazelcast cluster (network partition, crash, Docker container stop), `ResilienceMembershipListener` on the Master marks all instances owned by that Wrapper as `OFFLINE`. **The records are not deleted**, preserving history and allowing `InstanceRecoveryService` to attempt re-attachment on reconnect.
@@ -178,9 +179,9 @@ TaskRouter (Wrapper)
   └──▶ RuntimeProvider.start(instanceId, workDir, command, env)
          Spawns screen/tmux/process/docker/k8s
 
-  ▼  PUT /api/instances/{id}/state {state: ONLINE}
-Ktor REST API (Master)
-  │  Updates IMap entry
+  ▼  ClusterStateService.putInstance({state: ONLINE, allocatedPort, processPid, …})
+Hazelcast IMap "instances" (shared by all cluster members)
+  │  Wrapper writes directly — no HTTP round-trip to Master
   ▼
 Client  ←  InstanceInfo {state: ONLINE, allocatedPort: 25565, …}
 ```
@@ -201,7 +202,7 @@ Client  ←  InstanceInfo {state: ONLINE, allocatedPort: 25565, …}
 
 | Module | Description |
 |--------|-------------|
-| `api` | Shared DTOs and interfaces: `InstanceInfo`, `Configuration`, `TemplateInstallationConfig`, `PortRange`, `InstanceState`, `RuntimeProvider`, `RuntimeRegistry`, task objects (`DeployInstanceTask`, `StopInstanceTask`, `ExecuteCommandTask`, `TemplateSyncTask`) |
+| `api` | Shared DTOs and interfaces: `InstanceInfo`, `Configuration`, `TemplateInstallationConfig`, `PortRange`, `InstanceState`, `RuntimeProvider`, `RuntimeRegistry`, task objects (`DeployInstanceTask`, `StopInstanceTask`, `ExecuteCommandTask`, `TemplateSyncTask`, `ShutdownNodeTask`) |
 | `app` | Core orchestrator: `UniverseApplication`, `HazelcastService`, `ClusterStateService`, `KtorServerService`, `TemplateManager`, `TaskDispatcher`, `TaskRouter`, `PortAllocator`, `CommandBootstrap`, built-in runtimes, `InstanceCountEnforcer`, `InstanceHealthMonitor`, `InstanceRecoveryService` |
 | `loader` | Bootstrap classloader: extracts `app.jarinjar` to a temp file, downloads runtime dependencies from `dependencies.txt` via `DependencyLoader`, appends to `URLClassLoader`, and invokes `AppKt.run()` |
 | `extensions/extension-api` | Extension-facing contracts: `Extension` (lifecycle hooks `onLoad`, `onReload`, `onUnload`), `TemplateStorageProvider`, `TemplateVariableProvider`, `TemplateStorageRegistry`, `TemplateVariableRegistry` |

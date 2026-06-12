@@ -73,7 +73,8 @@ Universe ships as a single fat JAR produced by the `loader` module. The loader b
       "isMasterNode": true,
       "masterAddress": "127.0.0.1",
       "masterPort": 6000,
-      "masterApiPort": 7000
+      "masterApiPort": 7000,
+      "debug": false
     }
     ```
 
@@ -88,6 +89,7 @@ Universe ships as a single fat JAR produced by the `loader` module. The loader b
     | `masterAddress` | IP or hostname of the Master node (used by Wrapper nodes to join the Hazelcast cluster) |
     | `masterPort` | Hazelcast port on the Master |
     | `masterApiPort` | REST API port on the Master (used by Minecraft plugins and tooling) |
+    | `debug` | `true` → enables `DEBUG`-level console and `INFO`-level framework logging; `false` → `WARN`+ only (default `false`) |
 
     <Note>
       A Master node can also run instances locally. You do not need a separate Wrapper node for a single-machine deployment.

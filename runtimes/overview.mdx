@@ -78,7 +78,7 @@ curl -X POST http://localhost:7000/api/node/reload
 
 Regardless of which runtime is active, every instance is assigned a unique port before it starts. Universe's `PortAllocator` checks three sources in order to guarantee conflict-free allocation:
 
-1. **Local in-memory allocations** — a `ConcurrentHashSet` of ports already assigned by this JVM instance during its current lifetime. Prevents the same wrapper from double-allocating within a burst of concurrent starts.
+1. **Local in-memory allocations** — a `ConcurrentHashMap.newKeySet()`-backed set of ports already assigned by this JVM instance during its current lifetime. Prevents the same wrapper from double-allocating within a burst of concurrent starts.
 
 2. **Cluster-wide active instances** — queries the Hazelcast `IMap` for all instances in `ONLINE` or `CREATING` state across every node, then skips any port already reported by another instance. This prevents collisions when two wrappers share overlapping `availablePorts` ranges.
 

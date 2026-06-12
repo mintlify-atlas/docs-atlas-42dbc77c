@@ -25,7 +25,7 @@ All endpoints except `GET /api/ping` and `GET /api/metrics` require a valid Bear
 | Level | Description | Rate Limit |
 |-------|-------------|------------|
 | `ALL` | Full admin access — instances, configs, templates, commands | Unlimited |
-| `PUBLIC` | Read-only access to public endpoints | 100 req / 60 s |
+| `PUBLIC` | Tracked by the rate limiter; no protected route accepts this level (all routes use `ALL`) | 100 req / 60 s |
 
 See the [Authentication guide](/api-reference/authentication) for how to generate keys and pass the token in requests.
 

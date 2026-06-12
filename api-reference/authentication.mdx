@@ -29,9 +29,9 @@ Universe defines two permission levels in `ApiPermission`:
     </Warning>
   </Tab>
   <Tab title="PUBLIC">
-    `PUBLIC` keys provide read-only access to public-facing endpoints such as node info, cluster status, and configuration listings. All instance operations require `ALL` permission — no instance endpoint is reachable with a `PUBLIC` key.
+    `PUBLIC` keys exist in the `ApiPermission` enum and are tracked by the rate limiter, but **every protected route requires `ALL` permission**. The `"protected"` Ktor auth scheme rejects any key whose permission is not `ALL`. As a result, `PUBLIC` keys cannot reach any route beyond the open `/ping` and `/metrics` endpoints.
 
-    `PUBLIC` keys are subject to rate limiting: **100 requests per 60-second sliding window** per key.
+    `PUBLIC` keys are subject to rate limiting: **100 requests per 60-second sliding window** per key. Reserve this permission level for future use or for external tools that only need the open health-check and metrics endpoints.
   </Tab>
 </Tabs>
 
@@ -50,7 +50,7 @@ Keys are created and managed from the interactive console on the Universe master
     The console will print the generated bearer token. Copy it immediately — it is only displayed once.
   </Step>
   <Step title="Create a PUBLIC key">
-    To create a read-only key for an external dashboard or monitoring tool:
+    To create a PUBLIC-permission key (rate-limited; note that all protected routes require ALL — PUBLIC keys can only reach the open `/ping` and `/metrics` endpoints):
 
     ```console
     key create dashboard PUBLIC
@@ -126,7 +126,7 @@ The rate limiter applies a **sliding window** algorithm per API key. A `PUBLIC` 
 </Accordion>
 
 <Tip>
-  If you are building automation that needs to stay within the `PUBLIC` limit, cache responses locally and batch read operations where possible. Switch to an `ALL` key for workflows that require sustained high-throughput access.
+  All protected API routes require an `ALL` key. Use `PUBLIC` keys only if you need a rate-limited credential scoped exclusively to the open `/ping` and `/metrics` endpoints. For any workflow that calls instance, configuration, template, cluster, node, or command endpoints, you must use an `ALL` key.
 </Tip>
 
 ## WebSocket Authentication
@@ -143,7 +143,7 @@ websocat -H "Authorization: Bearer YOUR_KEY" \
   ws://localhost:7000/api/console
 ```
 
-Authentication is validated during the handshake. If the token is missing or invalid the server returns `101` is never sent and the connection is closed with `401`.
+Authentication is validated during the handshake. If the token is missing or invalid, `101 Switching Protocols` is never sent and the connection is rejected with `401`.
 
 <Note>
   `GET /api/ping` and `GET /api/metrics` are the only two endpoints that do not require authentication. `/ping` returns basic node status and is safe to use for health checks. `/metrics` returns Prometheus exposition-format data intended for scraping.
@@ -160,7 +160,7 @@ Authentication is validated during the handshake. If the token is missing or inv
 </ResponseField>
 
 <ResponseField name="429 Too Many Requests" type="object">
-  Returned when a `PUBLIC` key exceeds 100 requests in a 60-second window.
+  Returned when a `PUBLIC` key exceeds 100 requests in a 60-second window. Because all protected routes require `ALL` permission, this response is only reachable via the open endpoints (`/ping`, `/metrics`) where the rate-limiting plugin still tracks `PUBLIC` key usage.
 
   ```json
   {

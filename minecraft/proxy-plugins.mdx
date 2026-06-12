@@ -134,7 +134,7 @@ This means backend servers appear and disappear from the proxy's routing table w
 
 ## Auto-Connect Strategies
 
-When `auto-connect.enabled` is `true`, the proxy intercepts the `PostLoginEvent` (Velocity) or `LoginEvent` (BungeeCord) and selects a destination server from all `ONLINE` instances whose `configurationName` matches `configuration-type`.
+When `auto-connect.enabled` is `true`, the proxy intercepts the `PlayerChooseInitialServerEvent` (Velocity) or `PostLoginEvent` (BungeeCord) and selects a destination server from all `ONLINE` instances whose `configurationName` matches `configuration-type`.
 
 | Strategy | Enum Value | Behavior |
 |---|---|---|

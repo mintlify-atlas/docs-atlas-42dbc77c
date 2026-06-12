@@ -40,11 +40,12 @@ On first launch Universe initialises the following layout next to the JAR:
   "debug": false,
   "maxRamMB": 8192,
   "maxCpu": 400,
-  "bindAddress": "127.0.0.1",
-  "publicAddress": "127.0.0.1",
+  "updateSources": [],
   "nodeSpecificVariables": {
     "region": "us-east-1"
-  }
+  },
+  "bindAddress": "127.0.0.1",
+  "publicAddress": "127.0.0.1"
 }
 ```
 
@@ -64,9 +65,23 @@ On first launch Universe initialises the following layout next to the JAR:
 | `debug` | boolean | `false` | Enables verbose `DEBUG` logging in the console and raises Logback to `INFO` for framework loggers. |
 | `maxRamMB` | integer | `8192` | Maximum RAM in megabytes this node is allowed to allocate across all running instances. |
 | `maxCpu` | integer | `400` | Maximum CPU units this node may allocate. 100 units equals one physical core. |
+| `updateSources` | array | `[]` | List of auto-update source definitions. Each entry polls a remote URL on a schedule and writes the result to a local path. See the sub-fields table below. |
+| `nodeSpecificVariables` | object | `{"region":"us-east-1"}` | Arbitrary key/value pairs exposed as template variables on this node only. Each key `k` becomes `%k%` in template variable replacement. |
 | `bindAddress` | string | `address` | Address Hazelcast binds its server socket to. Set to `"0.0.0.0"` inside Docker to accept connections on all interfaces. |
 | `publicAddress` | string | `address` | Address advertised to other Hazelcast members. Use your Tailscale IP when running behind Docker NAT. |
-| `nodeSpecificVariables` | object | `{"region":"us-east-1"}` | Arbitrary key/value pairs exposed as template variables on this node only. |
+
+### `updateSources` Entry Fields
+
+Each object in the `updateSources` array controls one auto-update source:
+
+| Sub-field | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `url` | string | — | Remote file URL to download. |
+| `targetPath` | string | — | Local path to write the file (e.g. `"./configuration/lobby.json"`). Use a trailing slash for template directories (e.g. `"./templates/global/server/"`). |
+| `hashUrl` | string \| null | `null` | Optional URL of a hash file (`.sha256`, `.sha1`, or `.md5`). If omitted, Universe tries common suffixes automatically. |
+| `intervalMs` | integer | `60000` | Polling interval in milliseconds. Default is 60 seconds. |
+| `enabled` | boolean | `true` | Whether this source is active. Set to `false` to pause polling without removing the entry. |
+| `syncToStorage` | string \| null | `null` | Optional storage provider key (e.g. `"s3"`) to sync to after a successful download. When set and `targetPath` is under `./templates/`, the file is also uploaded to that storage provider. |
 
 ## Master vs Wrapper Configuration
 

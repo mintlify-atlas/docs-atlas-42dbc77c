@@ -78,14 +78,20 @@ Universe is suitable for any workload that requires distributing multiple short-
 | `api` | Shared data classes (`InstanceInfo`, `Configuration`, `TemplateInstallationConfig`), task DTOs, `RuntimeProvider` / `RuntimeRegistry` interfaces |
 | `app` | Core orchestrator: Hazelcast service, Ktor API, `TemplateManager`, `TaskRouter`, built-in runtimes, command framework |
 | `loader` | Bootstrap classloader — extracts `app.jarinjar`, downloads runtime dependencies from `dependencies.txt`, and invokes `AppKt.run()` |
-| `extensions/extension-api` | Extension-facing interfaces: `Extension`, `TemplateStorageProvider`, `TemplateVariableProvider`, `TemplateStorageRegistry` |
+| `extensions/extension-api` | Extension-facing interfaces: `Extension`, `TemplateStorageProvider`, `TemplateVariableProvider`, `TemplateStorageRegistry`, `TemplateVariableRegistry` |
 | `extensions/runtime-docker` | Docker container runtime — manages container lifecycle, port bindings, volume mounts, and exec commands |
 | `extensions/runtime-k8s` | Kubernetes Pod runtime — provides `%NAMESPACE%`, `%SERVICE_DNS%`, and `%POD_NAME%` template variables |
 | `extensions/storage-s3` | AWS S3 template storage backend with `s3 upload` / `s3 download` console commands |
 | `extensions/tailscale` | Tailscale mesh-network extension — injects `%TAILSCALE_IP%`, `%TAILSCALE_MAGIC_DNS%`, `%TAILSCALE_HOSTNAME%` |
+| `extensions/db-postgres` | PostgreSQL database provider |
+| `extensions/db-mongodb` | MongoDB database provider |
+| `extensions/db-redis` | Redis database provider |
+| `extensions/metrics-prometheus` | Prometheus metrics export (`/api/metrics`) |
+| `extensions/metrics-influxdb` | InfluxDB metrics export |
 | `extensions/gitops` | Git-based template and configuration sync |
 | `extensions/argocd` | Kubernetes manifest exporter for ArgoCD tracking |
 | `extensions/discord` | Discord bot for cluster management |
+| `extensions/example` | Reference extension implementation |
 | `minecraft/minecraft-api` | JVM 8 compatible public API for Minecraft plugin developers |
 | `minecraft/minecraft-modern` | Paper 1.21.11+ plugin with MiniMessage |
 | `minecraft/minecraft-legacy` | Spigot 1.8.8 plugin with legacy `&` color codes |

@@ -301,7 +301,7 @@ class MyPlugin : JavaPlugin() {
 
 ## Java Usage
 
-All `UniverseAPI` methods are annotated with `@JvmStatic` or follow Java naming conventions (`getInstanceManager()` etc.) so Java plugins can use the API without any Kotlin dependency.
+`Universe.getAPI()` and `Universe.isAvailable()` are annotated with `@JvmStatic`. `UniverseAPI` interface methods follow standard Java naming conventions (`getInstanceManager()` etc.) so Java plugins can call them directly without any Kotlin dependency.
 
 ```java
 UniverseAPI api = Universe.getAPI();

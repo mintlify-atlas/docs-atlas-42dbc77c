@@ -117,8 +117,12 @@ The following placeholders are replaced in every file listed in `fileModificatio
 | `%MASTER_PORT%` | Master Hazelcast port. |
 | `%MASTER_API_PORT%` | Master REST API port. |
 | `%NODE_ID%` | `nodeId` of the Wrapper executing this instance. |
+| `%NODE_PORT%` | Hazelcast port of the node executing this instance (`port` from `config.json`). |
+| `%NODE_ADDRESS%` | Address of the node executing this instance (`address` from `config.json`). |
 | `%HOST_ADDRESS%` | `hostAddress` from the instance configuration (or runtime override). |
 | `%CONFIGURATION_NAME%` | `name` field of the instance configuration. |
+| `%RAM_MB%` | `ramMB` value from the instance configuration. |
+| `%INSTANCE_GROUPS` | Semicolon-separated list of instance group names from the instance configuration. Note: this placeholder has no closing `%`. |
 
 These variables are also available in `environmentVariables` values so they are injected into the process environment as real values at launch time.
 
